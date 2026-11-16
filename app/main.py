@@ -1,5 +1,6 @@
 """HTTP-вход серверной части: проверка живости и метод /run для стенда."""
 
+import asyncio
 import logging
 
 from fastapi import FastAPI, Header, HTTPException
@@ -16,6 +17,9 @@ app = FastAPI(title="Mind-flowing · Кейс 4", docs_url=None, redoc_url=None)
 
 # Последний полученный набор: после /run финального показа клиент работает с ним.
 app.state.dataset = None
+# Прогоны по коду набора. Повторный /run с тем же кодом (например, после обрыва связи у вызывающей стороны)
+# получает тот же результат и не тратит суточный лимит токенов второй раз.
+app.state.runs = {}
 
 
 class RunRequest(BaseModel):
@@ -37,12 +41,26 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "Нужен заголовок Authorization: Bearer <токен>")
 
+    runs: dict[str | None, asyncio.Task] = app.state.runs
+    task = runs.get(body.dataset_code)
+    if task is None:
+        task = runs[body.dataset_code] = asyncio.create_task(_answer(token, body.dataset_code))
     try:
-        dataset = await hack_api.fetch_dataset(token, body.dataset_code)
+        # shield: если вызывающая сторона оборвала соединение, прогон продолжается и достанется повторному запросу
+        return await asyncio.shield(task)
     except hack_api.HackApiError as error:
+        runs.pop(body.dataset_code, None)
         log.error("getData не удался: статус %s", error.status_code)
         raise HTTPException(502, "Не удалось получить набор у сервиса хакатона") from error
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        runs.pop(body.dataset_code, None)  # сбой не запоминаем: следующий запрос начнёт заново
+        raise
 
+
+async def _answer(token: str, dataset_code: str | None) -> dict:
+    dataset = await hack_api.fetch_dataset(token, dataset_code)
     app.state.dataset = dataset
     log.info("набор получен: запросов %d", len(dataset["requests"]))
     return await pipeline.answer_dataset(dataset)

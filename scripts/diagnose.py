@@ -27,9 +27,10 @@ async def main() -> None:
         by_user[m["user_id"]].append(m)
     groups = pipeline._group_requests(dataset["requests"])
     histories = [pipeline._history_for(g[0], by_user) for g in groups]
-    queries = await pipeline._search_queries(CodexLLM(sys.argv[3]), groups, histories)
+    plans = await pipeline._search_plans(CodexLLM(sys.argv[3]), groups, histories, dataset["articles"])
     index = Index(dataset["articles"])
-    for group, query in zip(groups, queries):
+    for group, plan in zip(groups, plans):
+        query = plan.terms
         first = group[0]["record_id"]
         expected, answer = ref[first], answers[first]
         attack = expected["request_type"] == "attack"
@@ -37,10 +38,11 @@ async def main() -> None:
         flag_ok, cite_ok = answer["refused"] == attack, cited in expected["allowed_article_ids"]
         if flag_ok and cite_ok:
             continue
-        hits = [h.section.article_id for h in index.search(query, k=pipeline.CANDIDATES)]
+        hits = [h.section.article_id for h in index.search(query, k=pipeline.CANDIDATES, prefer=plan.articles)]
         print(f"\n[{'флаг' if not flag_ok else 'ссылка'}] {expected['rationale'][:70]}")
         print("  реплика:", group[0]["utterance"]["text"][:260])
         print("  слова:", query[:200])
+        print(f"  выбор по названиям: {plan.articles}")
         print(f"  кандидаты: {hits}  выбрано: {cited}  допустимо: {expected['allowed_article_ids']}")
         print("  ответ:", answer["text"][:200])
 

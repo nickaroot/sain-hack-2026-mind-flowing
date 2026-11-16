@@ -14,7 +14,7 @@ import json
 import time
 from collections import defaultdict
 
-from app import pipeline
+from app import config, pipeline
 from app.llm import LLM
 from scripts.offline_llm import CodexLLM
 
@@ -67,6 +67,9 @@ async def main() -> None:
         dataset = {**dataset, "requests": [r for r in dataset["requests"] if r["group_id"] in keep]}
 
     llm = CodexLLM(args.offline) if args.offline else LLM()
+    if args.offline:
+        # Codex считает токены вместе со своей инструкцией агента, поэтому предел на повторы здесь не действует.
+        config.RETRY_TOKEN_BUDGET = 10**9
     started = time.time()
     answers = await pipeline.answer_dataset(dataset, llm)
     with open(args.out, "w", encoding="utf-8") as f:

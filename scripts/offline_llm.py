@@ -60,6 +60,7 @@ class CodexLLM(ReplayLLM):
     BINARY = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
     WORKDIR = ROOT / "codex-empty"  # пустая папка: модель запускается в песочнице только для чтения
     TIMEOUT_SECONDS = 300
+    ATTEMPTS = 3
 
     def __init__(self, name: str, model: str = "gpt-6-luna", parallel: int = 3):
         super().__init__(name)
@@ -68,6 +69,17 @@ class CodexLLM(ReplayLLM):
         self._gate = asyncio.Semaphore(parallel)
 
     async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:
+        # Codex CLI изредка возвращает пустой ответ. У прокси организаторов повторы есть в app/llm.py,
+        # здесь нужен свой, иначе один сбой искажает всю оценку.
+        for attempt in range(self.ATTEMPTS):
+            try:
+                return await self._call(system, user, effort)
+            except LLMError:
+                if attempt == self.ATTEMPTS - 1:
+                    raise
+        raise LLMError("недостижимо")
+
+    async def _call(self, system: str, user: str, effort: str) -> dict:
         key = call_key(system, user)
         if key in self._cache:
             self.usage.calls += 1

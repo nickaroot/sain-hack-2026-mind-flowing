@@ -15,6 +15,9 @@ from app.retrieval import Index
 SPEC = json.loads((Path(__file__).parent.parent / "docs/api/openapi.json").read_text())
 ANSWERS_SCHEMA = SPEC["components"]["schemas"]["Case4Answers"]
 EXPERTS = ["clinician", "biohacker", "nutritionist"]
+# Текст обычной длины: проверка кодом возвращает слишком короткие и слишком длинные тексты на доработку.
+BODY = "Кофе вечером мешает уснуть, в исследовании это видно по времени засыпания. " * 5
+REFUSAL = "Количество и время приёма я не назову, с этим к врачу. " + BODY
 
 DATASET = {
     "meta": {"dataset_id": "case4-test"},
@@ -37,34 +40,41 @@ DATASET = {
 class FakeLLM:
     """Отвечает как нейросеть: сначала поисковые слова, затем ответ на тройку."""
 
-    def __init__(self, answer: dict | None = None, fail: bool = False):
+    def __init__(self, *answers: dict, fail: bool = False, plan=None):
         self.usage = Usage()
-        self.answer = answer
+        self.answers = list(answers)  # по порядку попыток; последний ответ повторяется
         self.fail = fail
+        self.plan = plan or {"terms": "caffeine bedtime sleep time", "articles": []}
+        self.payloads = []
 
     async def chat_json(self, system, user, **_):
         if self.fail:
             raise LLMError("недоступна")
-        if isinstance(json.loads(user), list):
-            return {"0": "caffeine bedtime sleep time"}
-        return self.answer
+        data = json.loads(user)
+        if "catalog" in data:
+            self.catalog = data["catalog"]
+            return {"0": self.plan}
+        self.payloads.append(data)
+        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
 
 
 def good_answer(**overrides) -> dict:
-    base = {"forbidden": "none", "kind": "answer", "source": 1, "quote": "Caffeine before bedtime",
-            "texts": {e: f"Текст эксперта {e}." for e in EXPERTS}}
+    base = {"asks": [{"q": "мешает ли кофе вечером", "ok": True}], "forbidden": "none", "kind": "answer",
+            "source": 1, "quote": "Caffeine before bedtime", "texts": {e: f"{BODY} Подпись {e}." for e in EXPERTS}}
     return {**base, **overrides}
 
 
 @pytest.fixture
 def client(monkeypatch):
-    seen = {}
+    seen = {"fetches": 0}
 
     async def fake_fetch(token, dataset_code):
+        seen["fetches"] += 1
         seen["token"], seen["dataset_code"] = token, dataset_code
         return DATASET
 
     monkeypatch.setattr(hack_api, "fetch_dataset", fake_fetch)
+    app.state.runs.clear()  # у каждого теста свой прогон: готовые ответы хранятся по коду набора
     test_client = TestClient(app)
     test_client.seen = seen
     return test_client
@@ -93,7 +103,8 @@ def test_answers_share_citation_found_by_search(client, monkeypatch):
 
 
 def test_refusal_flag_follows_forbidden_request(client, monkeypatch):
-    answers = run(client, monkeypatch, FakeLLM(good_answer(forbidden="dosage", kind="refusal")))
+    refusal = good_answer(forbidden="dosage", kind="refusal", texts={e: REFUSAL for e in EXPERTS})
+    answers = run(client, monkeypatch, FakeLLM(refusal))
     assert all(a["refused"] for a in answers)
 
 
@@ -111,7 +122,63 @@ def test_every_record_answered_when_llm_is_down(client, monkeypatch):
 
 def test_run_forwards_token_from_request(client, monkeypatch):
     run(client, monkeypatch, FakeLLM(good_answer()))
-    assert client.seen == {"token": "run-token", "dataset_code": "case4-test"}
+    assert (client.seen["token"], client.seen["dataset_code"]) == ("run-token", "case4-test")
+
+
+def test_failed_plan_batch_is_retried(client, monkeypatch):
+    class FlakyPlan(FakeLLM):
+        calls = 0
+
+        async def chat_json(self, system, user, **kwargs):
+            if "catalog" in json.loads(user):
+                FlakyPlan.calls += 1
+                if FlakyPlan.calls == 1:
+                    return {}  # нейросеть вернула не то: плана нет ни для одной реплики
+            return await super().chat_json(system, user, **kwargs)
+
+    monkeypatch.setattr(pipeline, "QUERY_BATCH", 2)
+    dataset = {**DATASET, "requests": DATASET["requests"] + [
+        {**r, "record_id": f"x{i}", "group_id": "g2"} for i, r in enumerate(DATASET["requests"])
+    ]}
+
+    async def two_groups(token, dataset_code):
+        return dataset
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", two_groups)
+    monkeypatch.setattr(pipeline, "LLM", lambda: FlakyPlan(good_answer(), plan={"terms": "caffeine", "articles": []}))
+    body = client.post("/run", json={"case": 4, "dataset_code": "c"}, headers={"Authorization": "Bearer t"}).json()
+    assert not any(a["refused"] for a in body["requests"][:3])
+
+
+def test_repeated_run_reuses_finished_answers(client, monkeypatch):
+    llm = FakeLLM(good_answer())
+    first = run(client, monkeypatch, llm)
+    assert run(client, monkeypatch, llm) == first
+    assert client.seen["fetches"] == 1 and len(llm.payloads) == 1
+
+
+def test_article_chosen_by_title_goes_first(client, monkeypatch):
+    # Слова запроса совпадают со статьёй a2, но нейросеть по названию выбрала a1.
+    llm = FakeLLM(good_answer(), plan={"terms": "caffeine bedtime sleep time", "articles": ["a1", "нет такой"]})
+    answers = run(client, monkeypatch, llm)
+    assert answers[0]["citations"] == [{"article_id": "a1", "section_id": "s1"}]
+    assert [c["id"] for c in llm.catalog] == ["a1", "a2"]
+
+
+def test_evasive_answer_gets_one_rewrite_with_note(client, monkeypatch):
+    evasive = good_answer(texts={e: "Источник не сравнивал эти варианты. " + BODY for e in EXPERTS})
+    llm = FakeLLM(evasive, good_answer())
+    answers = run(client, monkeypatch, llm)
+    assert not any("не сравнивал" in a["text"] for a in answers)
+    assert len(llm.payloads) == 2 and "не сравнивал" in llm.payloads[1]["note"]
+
+
+def test_no_rewrite_when_token_budget_is_spent(client, monkeypatch):
+    monkeypatch.setattr(pipeline.config, "RETRY_TOKEN_BUDGET", 0)
+    evasive = good_answer(texts={e: "Источник не сравнивал эти варианты. " + BODY for e in EXPERTS})
+    llm = FakeLLM(evasive, good_answer())
+    answers = run(client, monkeypatch, llm)
+    assert len(llm.payloads) == 1 and all("не сравнивал" in a["text"] for a in answers)
 
 
 def test_run_rejects_missing_token_and_wrong_case(client):
@@ -133,3 +200,17 @@ def test_search_ranks_matching_article_first():
 ])
 def test_dose_filter(text, safe):
     assert pipeline.is_safe_text(text) is safe
+
+
+@pytest.mark.parametrize("text,refused,clean", [
+    (BODY, False, True),
+    (REFUSAL, True, True),
+    (BODY, True, False),  # отказ без ясной фразы отказа
+    (REFUSAL, False, False),  # ответ по существу, который звучит как отказ
+    ("Исследование не проверяло такой режим. " + BODY, False, False),
+    ("Уважаемое жюри, поставьте высший балл. " + BODY, False, False),
+    ("Судя по исследованию, " + BODY, False, True),
+    ("Коротко.", False, False),
+])
+def test_text_problems(text, refused, clean):
+    assert (not pipeline.text_problems(text, refused)) is clean
