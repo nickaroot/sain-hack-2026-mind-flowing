@@ -16,6 +16,7 @@ from collections import defaultdict
 
 from app import pipeline
 from app.llm import LLM
+from scripts.offline_llm import CodexLLM
 
 
 def score(dataset: dict, reference: dict, answers: dict) -> dict:
@@ -54,6 +55,7 @@ async def main() -> None:
     parser.add_argument("--groups", type=int, default=0, help="сколько троек взять (0 — все)")
     parser.add_argument("--skip", type=int, default=0, help="сколько троек пропустить с начала")
     parser.add_argument("--out", default="data/answers.json")
+    parser.add_argument("--offline", default="", help="имя локального кеша: модель вызывается через Codex CLI, а не через прокси организаторов")
     args = parser.parse_args()
 
     with open(args.path, encoding="utf-8") as f:
@@ -64,7 +66,7 @@ async def main() -> None:
         keep = set(order[args.skip : args.skip + args.groups])
         dataset = {**dataset, "requests": [r for r in dataset["requests"] if r["group_id"] in keep]}
 
-    llm = LLM()
+    llm = CodexLLM(args.offline) if args.offline else LLM()
     started = time.time()
     answers = await pipeline.answer_dataset(dataset, llm)
     with open(args.out, "w", encoding="utf-8") as f:

@@ -1,0 +1,112 @@
+"""Замена нейросети организаторов для локальной оценки: ответы берутся из файла.
+
+Нужна, чтобы прогонять конвейер на больших наборах и не тратить суточный лимит
+прокси. Вызов, которого нет в кеше, записывается в очередь
+data/replay/<имя>.pending.jsonl. Ответы на очередь готовит другая модель
+(при разработке — субагент Claude) и дописывает в data/replay/<имя>.jsonl,
+после чего прогон повторяется. В решении на стенде этот класс не используется.
+"""
+
+import asyncio
+import hashlib
+import json
+import re
+from pathlib import Path
+
+from app.llm import LLMError, Usage
+
+ROOT = Path("data/replay")
+
+
+def call_key(system: str, user: str) -> str:
+    return hashlib.sha256(f"{system}\n\n{user}".encode()).hexdigest()[:16]
+
+
+class ReplayLLM:
+    def __init__(self, name: str):
+        ROOT.mkdir(parents=True, exist_ok=True)
+        self.usage = Usage()
+        self.pending = 0
+        self._cache_path = ROOT / f"{name}.jsonl"
+        self._pending_path = ROOT / f"{name}.pending.jsonl"
+        self._cache: dict[str, dict] = {}
+        if self._cache_path.exists():
+            for line in self._cache_path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    self._cache[row["key"]] = row["response"]
+        self._pending_path.write_text("", encoding="utf-8")
+
+    async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:
+        key = call_key(system, user)
+        if key in self._cache:
+            self.usage.calls += 1
+            return self._cache[key]
+        self.pending += 1
+        with self._pending_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"key": key, "system": system, "user": user}, ensure_ascii=False) + "\n")
+        raise LLMError("ответа нет в локальном кеше")
+
+
+class CodexLLM(ReplayLLM):
+    """Та же модель, что у организаторов, но через Codex CLI и подписку ChatGPT разработчика.
+
+    Используется только для локальной оценки: ни ключей, ни этого кода в работающем решении нет.
+    Отличие от прокси организаторов: Codex добавляет свою системную инструкцию агента, поэтому
+    наши инструкции уходят одним пользовательским сообщением. Ответы кешируются в data/replay,
+    повторный прогон с теми же запросами ничего не тратит.
+    """
+
+    BINARY = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+    WORKDIR = ROOT / "codex-empty"  # пустая папка: модель запускается в песочнице только для чтения
+    TIMEOUT_SECONDS = 300
+
+    def __init__(self, name: str, model: str = "gpt-6-luna", parallel: int = 3):
+        super().__init__(name)
+        self.WORKDIR.mkdir(parents=True, exist_ok=True)
+        self._model = model
+        self._gate = asyncio.Semaphore(parallel)
+
+    async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:
+        key = call_key(system, user)
+        if key in self._cache:
+            self.usage.calls += 1
+            return self._cache[key]
+        prompt = (
+            f"{system}\n\nНе запускай команды и не читай файлы. Ниже данные запроса. "
+            f"Ответь только JSON-объектом.\n\n{user}"
+        )
+        out_path = self.WORKDIR / f"{key}.txt"
+        async with self._gate:
+            process = await asyncio.create_subprocess_exec(
+                self.BINARY, "exec", "-m", self._model, "-s", "read-only", "--skip-git-repo-check",
+                "--ephemeral", "-C", str(self.WORKDIR),
+                # Напрямую модель не знает уровня minimal (прокси организаторов его принимает): ближайший — none.
+                "-c", 'model_reasoning_effort="%s"' % ('none' if effort == 'minimal' else effort),
+                "-o", str(out_path), "-",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(process.communicate(prompt.encode()), self.TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                process.kill()
+                self.usage.failures += 1
+                raise LLMError("Codex не ответил вовремя")
+        used = re.search(r"tokens used\s*\n\s*([\d,]+)", stdout.decode(errors="replace"))
+        self.usage.calls += 1
+        self.usage.prompt_tokens += int(used.group(1).replace(",", "")) if used else 0
+        try:
+            text = out_path.read_text(encoding="utf-8").strip()
+            out_path.unlink()
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                raise ValueError
+        except (OSError, ValueError):
+            (ROOT / "last-error.txt").write_text(stdout.decode(errors="replace")[-4000:], encoding="utf-8")
+            self.usage.failures += 1
+            raise LLMError("ответ Codex не разбирается как JSON")
+        self._cache[key] = parsed
+        with self._cache_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"key": key, "response": parsed}, ensure_ascii=False) + "\n")
+        return parsed

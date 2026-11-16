@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from datetime import datetime
 
 from app import prompts
 from app.llm import LLM, LLMError
@@ -26,6 +27,11 @@ SNIPPET_CHARS = 800
 HISTORY_MESSAGES = 4
 HISTORY_CHARS = 200
 QUERY_BATCH = 20
+ANSWER_ATTEMPTS = 2
+RETRY_NOTE = (
+    "В прошлой попытке в тексте было количество вещества с единицей измерения. Перепиши все три текста без "
+    "миллиграммов, капель и таблеток: кофеин — только в чашках, алкоголь — в бокалах."
+)
 EXPERT_IDS = ("clinician", "biohacker", "nutritionist")
 
 FALLBACK_TEXTS = {
@@ -54,7 +60,9 @@ def _citation(hit: Hit) -> dict:
 
 
 def _history_for(request: dict, by_user: dict[str, list[dict]]) -> list[str]:
-    earlier = [m for m in by_user.get(request["user_id"], []) if m["at"] < request["utterance"]["at"]]
+    # Время сравниваем как моменты, а не как строки: у сообщений бывают разные часовые пояса.
+    asked_at = datetime.fromisoformat(request["utterance"]["at"])
+    earlier = [m for m in by_user.get(request["user_id"], []) if datetime.fromisoformat(m["at"]) < asked_at]
     return [f"{m['role']}: {m['text'][:HISTORY_CHARS]}" for m in earlier[-HISTORY_MESSAGES:]]
 
 
@@ -73,8 +81,8 @@ async def _search_queries(llm: LLM, groups: list[list[dict]], histories: list[li
     async def one_batch(start: int) -> None:
         items = []
         for i in range(start, min(start + QUERY_BATCH, len(groups))):
-            user_lines = [h for h in histories[i] if h.startswith("user:")][-2:]
-            items.append({"id": str(i), "text": " ".join([*user_lines, groups[i][0]["utterance"]["text"]])})
+            context = [h[len("user: "):] for h in histories[i] if h.startswith("user:")][-2:]
+            items.append({"id": str(i), "context": context, "text": groups[i][0]["utterance"]["text"]})
         try:
             result = await llm.chat_json(
                 prompts.QUERY_SYSTEM, json.dumps(items, ensure_ascii=False), max_tokens=2500, effort="minimal"
@@ -117,15 +125,24 @@ async def _answer_group(
             for n, h in enumerate(hits, start=1)
         ],
     }
-    try:
-        result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
-    except LLMError:
+    # Запасной ответ баллов не приносит, поэтому одна повторная попытка оправдана: и при сбое вызова,
+    # и когда в тексте оказалось количество вещества (тогда во второй попытке об этом сказано прямо).
+    parsed = None
+    for attempt in range(ANSWER_ATTEMPTS):
+        try:
+            result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
+        except LLMError:
+            continue
+        texts, source = result.get("texts"), result.get("source")
+        if not isinstance(texts, dict) or not isinstance(source, int) or not 1 <= source <= len(hits):
+            continue
+        parsed = (result, texts, source)
+        if all(isinstance(texts.get(r["expert_id"]), str) and is_safe_text(texts[r["expert_id"]]) for r in group):
+            break
+        payload["note"] = RETRY_NOTE
+    if parsed is None:
         return _fallback(group, hits, default_citation)
-
-    texts = result.get("texts")
-    source = result.get("source")
-    if not isinstance(texts, dict) or not isinstance(source, int) or not 1 <= source <= len(hits):
-        return _fallback(group, hits, default_citation)
+    result, texts, source = parsed
     refused = result.get("kind") == "refusal" or result.get("forbidden") not in (None, "none")
     citation = _citation(hits[source - 1])
 
@@ -155,7 +172,7 @@ async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
     }
 
     by_user: dict[str, list[dict]] = defaultdict(list)
-    for message in sorted(dataset.get("chat_history", []), key=lambda m: m["at"]):
+    for message in sorted(dataset.get("chat_history", []), key=lambda m: datetime.fromisoformat(m["at"])):
         by_user[message["user_id"]].append(message)
 
     groups = _group_requests(dataset["requests"])
