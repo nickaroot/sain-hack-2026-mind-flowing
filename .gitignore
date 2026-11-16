@@ -1,0 +1,30 @@
+# Секреты из архива команды — никогда не коммитить
+id_ed25519*
+known_hosts
+api.token
+llm.key
+*.token
+*.key
+.env
+.env.*
+archive/
+
+# Материалы организаторов (лежат локально, в репозиторий не идут)
+/Инструкция для команд.pdf
+/Положение о Хакатоне .pdf
+/Кейс */
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Локальные данные и кеши
+data/
+*.log
+.DS_Store
+
+# Клиент
+node_modules/
+dist/
