@@ -9,6 +9,8 @@ from app import config, hack_api, pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("app")
+# httpx на уровне INFO пишет URL запроса, а в нём код набора: в логи он попадать не должен.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(title="Mind-flowing · Кейс 4", docs_url=None, redoc_url=None)
 
@@ -22,6 +24,7 @@ class RunRequest(BaseModel):
 
 
 @app.get("/")
+@app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "case": config.CASE_ID}
 
@@ -41,5 +44,5 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
         raise HTTPException(502, "Не удалось получить набор у сервиса хакатона") from error
 
     app.state.dataset = dataset
-    log.info("набор %s: запросов %d", dataset["meta"]["dataset_id"], len(dataset["requests"]))
+    log.info("набор получен: запросов %d", len(dataset["requests"]))
     return await pipeline.answer_dataset(dataset)
