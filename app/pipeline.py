@@ -354,10 +354,19 @@ def _answers(group: list[dict], draft: Draft | None, hits: list[Hit], default_ci
     return answers
 
 
-async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
-    """Возвращает тело ответа /run: ровно один ответ на каждый запрос набора."""
+async def answer_dataset(
+    dataset: dict, llm: LLM | None = None, deadline_seconds: float | None = None, quick: bool = False
+) -> dict:
+    """Возвращает тело ответа /run: ровно один ответ на каждый запрос набора.
+
+    Разговор в клиенте идёт через эту же функцию с набором из одной тройки и коротким сроком: так живой
+    ответ строится теми же шагами и проходит те же проверки, что и ответы, которые оценивает стенд.
+    quick — режим разговора: человек ждёт перед экраном, поэтому тройка переписывается, только если в
+    тексте есть небезопасное (количество вещества, запрещённая формулировка) или ответа нет совсем;
+    замечания к стилю и длине повторного вызова не стоят.
+    """
     llm = llm or LLM()
-    llm.deadline = time.monotonic() + config.RUN_DEADLINE_SECONDS
+    llm.deadline = time.monotonic() + (deadline_seconds or config.RUN_DEADLINE_SECONDS)
     index = Index(dataset["articles"])
     # Ссылка на случай, когда поиск ничего не дал: первый существующий раздел базы.
     default_citation = next(
@@ -398,7 +407,7 @@ async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
     # страдает качество отдельных троек, а не наличие ответов.
     drafts = list(await asyncio.gather(*(attempt(i) for i in range(len(groups)))))
     order = sorted(
-        (i for i, d in enumerate(drafts) if all_hits[i] and (d is None or d.problems)),
+        (i for i, d in enumerate(drafts) if all_hits[i] and (d is None or (d.unsafe if quick else d.problems))),
         key=lambda i: (drafts[i] is not None, *(-n for n in (drafts[i].rank if drafts[i] else (0, 0)))),
     )
     rewritten = 0

@@ -1,13 +1,14 @@
-"""HTTP-вход серверной части: проверка живости и метод /run для стенда."""
+"""HTTP-вход серверной части: проверка живости, метод /run для стенда и методы /api для клиента."""
 
 import asyncio
 import hashlib
 import logging
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app import config, hack_api, pipeline
+from app import chat, config, hack_api, pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("app")
@@ -15,12 +16,19 @@ log = logging.getLogger("app")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(title="Mind-flowing · Кейс 4", docs_url=None, redoc_url=None)
+# Клиент на финальном показе открывают в браузере на компьютере организаторов, а серверная часть работает
+# на стенде: это разные адреса, и без разрешения браузер не пустит запросы. Учётных данных в запросах нет.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
+app.include_router(chat.router)
 
 # Последний полученный набор: после /run финального показа клиент работает с ним.
 app.state.dataset = None
 # Прогоны по коду набора. Повторный /run с тем же кодом (например, после обрыва связи у вызывающей стороны)
 # получает тот же результат и не тратит суточный лимит токенов второй раз.
 app.state.runs = {}
+# Прошёл ли в этом процессе прогон набора: после него разговорам в клиенте отдаётся больший запас токенов.
+app.state.run_finished = False
+app.state.chat = None
 
 
 MAX_KEPT_FALLBACK_SHARE = 0.1
@@ -71,6 +79,7 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
     if fallbacks > MAX_KEPT_FALLBACK_SHARE * len(answers["requests"]):
         # Нейросеть была недоступна для заметной части набора: повторный /run стоит посчитать заново.
         forget()
+    app.state.run_finished = True
     return answers
 
 

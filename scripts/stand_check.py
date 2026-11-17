@@ -7,7 +7,8 @@
 3. каждые 2 секунды до 60 секунд ждёт любой HTTP-ответ на GET /;
 4. один раз вызывает POST /run с токеном прогона и кодом набора и ждёт ответ до 45 минут;
 5. проверяет то, за что автоматическая часть обнуляется: HTTP 200, JSON, размер, формат (validate).
-Дополнительно: повторный /run не должен тратить лимит второй раз.
+Дополнительно: повторный /run не должен тратить лимит второй раз, а после прогона серверная часть должна
+отвечать клиенту — как на финальном показе: список экспертов, разговор, запрос из браузера с другого адреса.
 
 Нужен Docker. Запуск: python -m scripts.stand_check --dataset case4-dev-v2=data/case4-dev-v2.json --cache emu-dev
 Любые ключи эмулятора (--spent, --reject, --fault-rate, --rpm) можно дописать в конец команды.
@@ -95,11 +96,47 @@ def watch_memory(peak: dict, stop: threading.Event) -> None:
         stop.wait(3)
 
 
+def check_client_methods(emulator_port: int) -> list[str]:
+    """То, что делает клиент на финальном показе: после /run спрашивает экспертов и задаёт вопрос из браузера."""
+    base, problems = f"http://127.0.0.1:{APP_PORT}/api", []
+    tokens = lambda: httpx.get(f"http://127.0.0.1:{emulator_port}/_emulator/stats", timeout=10).json()["tokens"]  # noqa: E731
+    experts = httpx.get(f"{base}/experts", timeout=30)
+    if experts.status_code != 200 or len(experts.json().get("experts", [])) < 3:
+        return [f"/api/experts: HTTP {experts.status_code}"]
+    ids = [e["expert_id"] for e in experts.json()["experts"]]
+    question = {"expert_id": ids[0], "text": "Мешает ли чашка кофе после обеда уснуть вечером?"}
+    before, started = tokens(), time.time()
+    answer = httpx.post(f"{base}/chat", json=question, headers={"Origin": "http://localhost:5173"}, timeout=180)
+    seconds, spent = time.time() - started, tokens() - before
+    if answer.status_code != 200:
+        return [f"/api/chat: HTTP {answer.status_code} {answer.text[:200]}"]
+    body = answer.json()
+    print(f"разговор: {seconds:.0f} с, токенов {spent}, отказ: {body['refused']}, запасной: {body['degraded']}, "
+          f"источник: {body['citations'][0].get('article_title', '')[:60]!r}")
+    if answer.headers.get("access-control-allow-origin") != "*":
+        problems.append("/api/chat: браузер с другого адреса не получит ответ (нет заголовка CORS)")
+    if set(body["answers"]) != set(ids) or body["degraded"]:
+        problems.append("/api/chat: нет ответа всех экспертов или вернулся запасной текст")
+    if not body["citations"] or not body["citations"][0].get("section_title"):
+        problems.append("/api/chat: у ссылки нет названий статьи и раздела")
+    before = tokens()
+    other = httpx.post(f"{base}/chat", json={**question, "expert_id": ids[1]}, timeout=60).json()
+    print(f"тот же вопрос другому эксперту: потрачено ещё токенов: {tokens() - before}")
+    if tokens() != before or other["text"] != body["answers"][ids[1]]:
+        problems.append("/api/chat: переключение эксперта потратило токены или дало другой текст")
+    citation = body["citations"][0]
+    source = httpx.get(f"{base}/sources/{citation['article_id']}/{citation['section_id']}", timeout=30)
+    if source.status_code != 200 or not source.json().get("text"):
+        problems.append("/api/sources: текст раздела не отдаётся")
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--out", default="data/stand-check-answers.json")
     parser.add_argument("--port", type=int, default=8900)
     parser.add_argument("--no-repeat", action="store_true", help="не проверять повторный /run")
+    parser.add_argument("--no-chat", action="store_true", help="не проверять методы для клиента")
     args, emulator_args = parser.parse_known_args()
     code = next(a for a in emulator_args if "=" in a and not a.startswith("--")).split("=")[0]
 
@@ -166,6 +203,9 @@ def main() -> None:
             print(f"повторный /run: HTTP {again.status_code}, {again_seconds:.1f} с, потрачено ещё токенов: {extra}")
             if again.status_code != 200 or again.content != response.content:
                 problems.append("повторный /run вернул другой ответ")
+
+        if not args.no_chat and response.status_code == 200:
+            problems += check_client_methods(args.port)
 
         state = json.loads(sh("docker", "inspect", "--format", "{{json .State}}", CONTAINER).stdout)
         print(f"память: пик {peak['mib']:.0f} МиБ из 512; OOMKilled: {state['OOMKilled']}; работает: {state['Running']}")
