@@ -24,6 +24,11 @@ MAX_RETRY_AFTER_SECONDS = 60.0
 LIMIT_PATIENCE_SECONDS = 150.0  # сколько терпим непрерывные 429, прежде чем считать суточный лимит исчерпанным
 
 
+# Лимит прокси — на команду, а не на объект: прогон набора и разговоры в клиенте создают разные LLM,
+# но стартовать их вызовы должны в одной очереди. Момент следующего разрешённого старта общий для процесса.
+_next_start = 0.0
+
+
 class LLMError(RuntimeError):
     pass
 
@@ -94,8 +99,6 @@ class LLM:
     exhausted: bool = False  # суточный лимит кончился: дальнейшие вызовы бессмысленны и только тратят время
     _limited_since: float | None = None  # когда началась непрерывная серия ответов 429
     _variant: int = 0  # номер набора необязательных параметров, который принимает модель
-    _pace: asyncio.Lock = field(default_factory=asyncio.Lock)
-    _next_start: float = 0.0
 
     def _note_limit(self, retry_after: float) -> None:
         """Отличает минутный лимит (проходит сам) от суточного (ждать бесполезно).
@@ -114,15 +117,22 @@ class LLM:
 
     async def _pause(self, tries: int, retry_after: float = 0.0) -> None:
         if tries <= len(RETRY_PAUSES_SECONDS) and not self.exhausted:
-            await asyncio.sleep(max(RETRY_PAUSES_SECONDS[tries - 1], min(retry_after, MAX_RETRY_AFTER_SECONDS)))
+            pause = max(RETRY_PAUSES_SECONDS[tries - 1], min(retry_after, MAX_RETRY_AFTER_SECONDS))
+            if self.deadline is not None:  # ждать дольше срока незачем: после него вызов всё равно не начнётся
+                pause = min(pause, max(0.0, self.deadline - time.monotonic()))
+            await asyncio.sleep(pause)
 
     async def _wait_turn(self) -> None:
-        """Запросы стартуют не чаще одного в MIN_SECONDS_BETWEEN_CALLS, сколько бы их ни шло параллельно."""
-        async with self._pace:
-            delay = self._next_start - time.monotonic()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            self._next_start = time.monotonic() + MIN_SECONDS_BETWEEN_CALLS
+        """Запросы стартуют не чаще одного в MIN_SECONDS_BETWEEN_CALLS — все, от любого экземпляра LLM.
+
+        Место в очереди занимается без await между чтением и записью, поэтому замок не нужен.
+        """
+        global _next_start
+        now = time.monotonic()
+        start = max(now, _next_start)
+        _next_start = start + MIN_SECONDS_BETWEEN_CALLS
+        if start > now:
+            await asyncio.sleep(start - now)
     _gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(MAX_PARALLEL_CALLS))
 
     async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:

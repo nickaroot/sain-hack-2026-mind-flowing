@@ -5,6 +5,7 @@ import hashlib
 import logging
 
 from fastapi import FastAPI, Header, HTTPException
+from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -16,8 +17,38 @@ log = logging.getLogger("app")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(title="Mind-flowing · Кейс 4", docs_url=None, redoc_url=None)
+
+
+class ApiBodyLimit:
+    """Методы для клиента открыты всем, а памяти 512 МБ: тело запроса к /api не читается дальше предела."""
+
+    def __init__(self, inner, max_bytes: int):
+        self.inner, self.max_bytes = inner, max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api"):
+            return await self.inner(scope, receive, send)
+        declared = dict(scope["headers"]).get(b"content-length", b"")
+        if declared.isdigit() and int(declared) > self.max_bytes:
+            return await JSONResponse({"detail": "Слишком длинный запрос"}, status_code=413)(scope, receive, send)
+        seen = 0
+
+        async def limited():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":  # длина не объявлена или объявлена неверно: считаем сами
+                seen += len(message.get("body", b""))
+                if seen > self.max_bytes:
+                    raise HTTPException(413, "Слишком длинный запрос")
+            return message
+
+        await self.inner(scope, limited, send)
+
+
+app.add_middleware(ApiBodyLimit, max_bytes=config.API_MAX_BODY_BYTES)
 # Клиент на финальном показе открывают в браузере на компьютере организаторов, а серверная часть работает
 # на стенде: это разные адреса, и без разрешения браузер не пустит запросы. Учётных данных в запросах нет.
+# Добавлен последним, то есть стоит снаружи: заголовки получают и отказы предыдущего слоя.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 app.include_router(chat.router)
 
@@ -58,6 +89,7 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
     runs: dict[tuple, asyncio.Task] = app.state.runs
     task = runs.get(key)
     if task is None:
+        chat.close_for_run(app)  # прогон важнее: разговоры, которые уже считаются или ждут очереди, прерываются
         task = runs[key] = asyncio.create_task(_answer(token, body.dataset_code))
 
     def forget() -> None:
@@ -87,4 +119,8 @@ async def _answer(token: str, dataset_code: str | None) -> dict:
     dataset = await hack_api.fetch_dataset(token, dataset_code)
     app.state.dataset = dataset
     log.info("набор получен: запросов %d", len(dataset["requests"]))
-    return await pipeline.answer_dataset(dataset)
+    llm = pipeline.LLM()
+    try:
+        return await pipeline.answer_dataset(dataset, llm)
+    finally:
+        chat.state_of(app).note_run(llm.usage.total_tokens)  # разговорам достаётся то, что осталось от прогона

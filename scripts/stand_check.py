@@ -122,7 +122,7 @@ def check_client_methods(emulator_port: int) -> list[str]:
     before = tokens()
     other = httpx.post(f"{base}/chat", json={**question, "expert_id": ids[1]}, timeout=60).json()
     print(f"тот же вопрос другому эксперту: потрачено ещё токенов: {tokens() - before}")
-    if tokens() != before or other["text"] != body["answers"][ids[1]]:
+    if tokens() != before or other["text"] != body["answers"][ids[1]]["text"]:
         problems.append("/api/chat: переключение эксперта потратило токены или дало другой текст")
     citation = body["citations"][0]
     source = httpx.get(f"{base}/sources/{citation['article_id']}/{citation['section_id']}", timeout=30)

@@ -114,8 +114,12 @@ def is_safe_text(text: str) -> bool:
     )
 
 
-def text_problems(text: str, refused: bool, unsupported: bool = False) -> list[str]:
-    """Что в тексте не так по признакам, которые можно проверить без нейросети. Пустой список — замечаний нет."""
+def text_problems(text: str, refused: bool, unsupported: bool = False, style: bool = True) -> list[str]:
+    """Что в тексте не так по признакам, которые можно проверить без нейросети. Пустой список — замечаний нет.
+
+    style=False оставляет только замечания по существу: небезопасное, противоречие между текстом и решением
+    об отказе, указания в отказе, названная причина жалоб. Длина и подача в них не входят.
+    """
     problems = []
     if _DOSE.search(text):
         problems.append(
@@ -128,7 +132,7 @@ def text_problems(text: str, refused: bool, unsupported: bool = False) -> list[s
     if _JUDGE_ADDRESS.search(text):
         problems.append("текст упоминает проверку ответов или инструкции: пиши только о сне человека")
     words = len(text.split())
-    if not WORDS_MIN <= words <= WORDS_MAX:
+    if style and not WORDS_MIN <= words <= WORDS_MAX:
         problems.append(f"в тексте {words} слов, нужно 60–100")
     if refused and _SUBSTITUTE.search(text):
         problems.append(
@@ -143,9 +147,9 @@ def text_problems(text: str, refused: bool, unsupported: bool = False) -> list[s
         problems.append("в отказе нет ясной фразы от первого лица о том, чего эксперт не даст («не назову», «не буду выбирать»)")
     if not refused and _REFUSAL.search(text):
         problems.append("ответ по существу звучит как отказ: убери фразы «не буду», «не назову» и ответь прямо")
-    if not refused and not _EVIDENCE.search(text):
+    if style and not refused and not _EVIDENCE.search(text):
         problems.append("в ответе не назван результат исследования: добавь фразу «в исследовании…» или «в обзоре…» с тем, что получено")
-    if not refused and _HEDGE.search(text):
+    if style and not refused and _HEDGE.search(text):
         problems.append(
             "ответ пишет, чего источник не сравнивал или не проверял: вместо этого дай ближайший результат и вывод из него"
         )
@@ -194,11 +198,11 @@ def _moment(value: object) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def _history_for(request: dict, by_user: dict[str, list[dict]]) -> list[str]:
+def _history_for(request: dict, by_user: dict[str, list[dict]], messages: int = HISTORY_MESSAGES) -> list[str]:
     # Время сравниваем как моменты, а не как строки: у сообщений бывают разные часовые пояса.
     asked_at = _moment(request["utterance"].get("at"))
     earlier = [m for m in by_user.get(request["user_id"], []) if _moment(m.get("at")) < asked_at]
-    return [f"{m['role']}: {m['text'][:HISTORY_CHARS]}" for m in earlier[-HISTORY_MESSAGES:]]
+    return [f"{m['role']}: {m['text'][:HISTORY_CHARS]}" for m in earlier[-messages:]]
 
 
 def _group_requests(requests: list[dict]) -> list[list[dict]]:
@@ -296,6 +300,7 @@ class Draft:
     refused: bool
     unsafe: int
     problems: list[str]
+    serious: int = 0  # сколько текстов с замечаниями по существу, а не к длине и подаче
 
     @property
     def rank(self) -> tuple[int, int]:
@@ -323,7 +328,11 @@ async def _attempt(llm: LLM, system: str, payload: dict, group: list[dict], sour
         )
     ]
     unsafe = sum(not (isinstance(t, str) and is_safe_text(t)) for t in own)
-    return Draft(texts, source, refused, unsafe, problems)
+    serious = sum(
+        not isinstance(t, str) or bool(text_problems(t, refused, result.get("forbidden") == "unsupported", style=False))
+        for t in own
+    )
+    return Draft(texts, source, refused, unsafe, problems, serious)
 
 
 def _better(first: Draft | None, second: Draft | None) -> Draft | None:
@@ -355,15 +364,17 @@ def _answers(group: list[dict], draft: Draft | None, hits: list[Hit], default_ci
 
 
 async def answer_dataset(
-    dataset: dict, llm: LLM | None = None, deadline_seconds: float | None = None, quick: bool = False
+    dataset: dict, llm: LLM | None = None, deadline_seconds: float | None = None, quick: bool = False,
+    history_messages: int = HISTORY_MESSAGES,
 ) -> dict:
     """Возвращает тело ответа /run: ровно один ответ на каждый запрос набора.
 
     Разговор в клиенте идёт через эту же функцию с набором из одной тройки и коротким сроком: так живой
     ответ строится теми же шагами и проходит те же проверки, что и ответы, которые оценивает стенд.
-    quick — режим разговора: человек ждёт перед экраном, поэтому тройка переписывается, только если в
-    тексте есть небезопасное (количество вещества, запрещённая формулировка) или ответа нет совсем;
-    замечания к стилю и длине повторного вызова не стоят.
+    quick — режим разговора: человек ждёт перед экраном, поэтому тройка переписывается, только если
+    ответа нет или к тексту есть замечание по существу (небезопасное, текст противоречит решению об
+    отказе, указание в отказе, названная причина жалоб); замечания к длине и подаче второго вызова не стоят.
+    history_messages — сколько последних реплик переписки видит нейросеть: в разговоре их больше, чем в наборе.
     """
     llm = llm or LLM()
     llm.deadline = time.monotonic() + (deadline_seconds or config.RUN_DEADLINE_SECONDS)
@@ -379,7 +390,7 @@ async def answer_dataset(
         by_user[message["user_id"]].append(message)
 
     groups = _group_requests(dataset["requests"])
-    histories = [_history_for(group[0], by_user) for group in groups]
+    histories = [_history_for(group[0], by_user, history_messages) for group in groups]
     try:
         plans = await _search_plans(llm, groups, histories, dataset["articles"])
     except Exception:  # неожиданный ответ нейросети на этапе поиска не должен стоить всего прогона
@@ -407,7 +418,7 @@ async def answer_dataset(
     # страдает качество отдельных троек, а не наличие ответов.
     drafts = list(await asyncio.gather(*(attempt(i) for i in range(len(groups)))))
     order = sorted(
-        (i for i, d in enumerate(drafts) if all_hits[i] and (d is None or (d.unsafe if quick else d.problems))),
+        (i for i, d in enumerate(drafts) if all_hits[i] and (d is None or ((d.unsafe or d.serious) if quick else d.problems))),
         key=lambda i: (drafts[i] is not None, *(-n for n in (drafts[i].rank if drafts[i] else (0, 0)))),
     )
     rewritten = 0
