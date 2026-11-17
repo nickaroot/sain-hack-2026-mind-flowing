@@ -164,6 +164,8 @@ class Index:
             ranked = self._fuse(ranked, by_article, prefer)
         picked = [hits[0] for hits in ranked[: k - deep]]
         picked += [hits[1] for hits in ranked[:deep] if len(hits) > 1]
+        # У лучших статей может не быть второго раздела: тогда свободные места занимают следующие статьи.
+        picked += [hits[0] for hits in ranked[k - deep :]][: k - len(picked)]
         order = {hits[0].section.article_id: rank for rank, hits in enumerate(ranked)}
         picked.sort(key=lambda h: order[h.section.article_id])
         return picked

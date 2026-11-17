@@ -1,6 +1,7 @@
 """HTTP-вход серверной части: проверка живости и метод /run для стенда."""
 
 import asyncio
+import hashlib
 import logging
 
 from fastapi import FastAPI, Header, HTTPException
@@ -22,6 +23,9 @@ app.state.dataset = None
 app.state.runs = {}
 
 
+MAX_KEPT_FALLBACK_SHARE = 0.1
+
+
 class RunRequest(BaseModel):
     case: int
     dataset_code: str | None = None
@@ -41,22 +45,33 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "Нужен заголовок Authorization: Bearer <токен>")
 
-    runs: dict[str | None, asyncio.Task] = app.state.runs
-    task = runs.get(body.dataset_code)
+    # Ключ — код набора вместе с отпечатком токена: другой токен или другой набор считаются заново.
+    key = (body.dataset_code, hashlib.sha256(token.encode()).hexdigest())
+    runs: dict[tuple, asyncio.Task] = app.state.runs
+    task = runs.get(key)
     if task is None:
-        task = runs[body.dataset_code] = asyncio.create_task(_answer(token, body.dataset_code))
+        task = runs[key] = asyncio.create_task(_answer(token, body.dataset_code))
+
+    def forget() -> None:
+        if runs.get(key) is task:  # не трогаем прогон, который уже начал следующий запрос
+            del runs[key]
     try:
         # shield: если вызывающая сторона оборвала соединение, прогон продолжается и достанется повторному запросу
-        return await asyncio.shield(task)
+        answers = await asyncio.shield(task)
     except hack_api.HackApiError as error:
-        runs.pop(body.dataset_code, None)
+        forget()
         log.error("getData не удался: статус %s", error.status_code)
         raise HTTPException(502, "Не удалось получить набор у сервиса хакатона") from error
     except asyncio.CancelledError:
         raise
     except Exception:
-        runs.pop(body.dataset_code, None)  # сбой не запоминаем: следующий запрос начнёт заново
+        forget()  # сбой не запоминаем: следующий запрос начнёт заново
         raise
+    fallbacks = sum(pipeline.is_fallback(a) for a in answers["requests"])
+    if fallbacks > MAX_KEPT_FALLBACK_SHARE * len(answers["requests"]):
+        # Нейросеть была недоступна для заметной части набора: повторный /run стоит посчитать заново.
+        forget()
+    return answers
 
 
 async def _answer(token: str, dataset_code: str | None) -> dict:

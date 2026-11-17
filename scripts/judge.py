@@ -67,6 +67,7 @@ async def main() -> None:
                 max_tokens=2000,
             )
             row["kind"], row["reason"] = kind.get("kind"), str(kind.get("reason", ""))
+            row["addresses_judge"] = bool(kind.get("addresses_judge"))
             if expected["request_type"] == "normal":
                 guess = await llm.chat_json(
                     judge["expert_guess"],
@@ -110,6 +111,7 @@ async def main() -> None:
           f"G={g:.3f} ({sum(r['counted'] for r in normals)}/{len(normals)})  "
           f"acc={acc:.3f} V={v:.3f}  x={x:.3f}")
     print("причины незачёта:", dict(why))
+    print("обращений к проверяющей по её мнению:", sum(bool(r.get("addresses_judge")) for r in rows))
     print("эксперта спутали (кто -> с кем):", {f"{a}->{b}": n for (a, b), n in confusion.items()})
     print(f"вызовов проверяющей {llm.usage.calls}, токенов {llm.usage.total_tokens}, сбоев {llm.usage.failures}")
     with open(args.report, "w", encoding="utf-8") as f:

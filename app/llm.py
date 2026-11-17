@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 import httpx
@@ -16,8 +17,10 @@ from app import config
 log = logging.getLogger("app.llm")
 
 RETRY_PAUSES_SECONDS = (5, 10, 20)
-REQUEST_TIMEOUT_SECONDS = 180.0
-MAX_PARALLEL_CALLS = 4  # лимит прокси — 30 запросов в минуту
+REQUEST_TIMEOUT_SECONDS = 120.0
+MAX_PARALLEL_CALLS = 4
+MIN_SECONDS_BETWEEN_CALLS = 2.2  # лимит прокси — 30 запросов в минуту, повторы тоже считаются
+MAX_RETRY_AFTER_SECONDS = 60.0
 
 
 class LLMError(RuntimeError):
@@ -30,6 +33,7 @@ class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+    cached_tokens: int = 0
     failures: int = 0
 
     @property
@@ -41,11 +45,31 @@ class Usage:
         self.prompt_tokens += usage.get("prompt_tokens", 0)
         self.completion_tokens += usage.get("completion_tokens", 0)
         self.reasoning_tokens += (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+        self.cached_tokens += (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+
+
+def _retry_after(response: httpx.Response) -> float:
+    """Пауза, которую просит прокси в заголовке Retry-After, в разумных пределах."""
+    try:
+        return min(max(float(response.headers.get("retry-after", 0)), 0.0), MAX_RETRY_AFTER_SECONDS)
+    except ValueError:
+        return 0.0
 
 
 @dataclass
 class LLM:
     usage: Usage = field(default_factory=Usage)
+    deadline: float | None = None  # момент по time.monotonic(), после которого вызовы не начинаются
+    _pace: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _next_start: float = 0.0
+
+    async def _wait_turn(self) -> None:
+        """Запросы стартуют не чаще одного в MIN_SECONDS_BETWEEN_CALLS, сколько бы их ни шло параллельно."""
+        async with self._pace:
+            delay = self._next_start - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next_start = time.monotonic() + MIN_SECONDS_BETWEEN_CALLS
     _gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(MAX_PARALLEL_CALLS))
 
     async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:
@@ -66,8 +90,15 @@ class LLM:
             for pause in (0, *RETRY_PAUSES_SECONDS):
                 if pause:
                     await asyncio.sleep(pause)
+                timeout = REQUEST_TIMEOUT_SECONDS
+                if self.deadline is not None:
+                    timeout = min(timeout, self.deadline - time.monotonic())
+                    if timeout < 5:
+                        last_error = "вышло время, отведённое на прогон"
+                        break
+                await self._wait_turn()
                 try:
-                    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
                         response = await client.post(
                             f"{config.LLM_BASE_URL}/chat/completions", headers=headers, json=body
                         )
@@ -76,18 +107,20 @@ class LLM:
                     continue
                 if response.status_code == 429 or response.status_code >= 500:
                     last_error = f"HTTP {response.status_code}"
+                    await asyncio.sleep(_retry_after(response))
                     continue
                 if response.status_code != 200:
                     raise LLMError(f"HTTP {response.status_code}")
-                payload = response.json()
-                self.usage.add(payload.get("usage") or {})
-                choice = payload["choices"][0]
-                if choice.get("finish_reason") == "length":
-                    last_error = "ответ обрезан по max_tokens"
-                    break
                 try:
+                    payload = response.json()
+                    self.usage.add(payload.get("usage") or {})
+                    choice = payload["choices"][0]
+                    if choice.get("finish_reason") == "length":
+                        last_error = "ответ обрезан по max_tokens"
+                        break
                     parsed = json.loads(choice["message"]["content"])
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+                    # прокси ответил 200, но не тем, что обещает протокол: это сбой одного вызова, а не прогона
                     last_error = "ответ не разбирается как JSON"
                     continue
                 if isinstance(parsed, dict):

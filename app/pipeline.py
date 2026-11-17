@@ -14,9 +14,10 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app import config, prompts
 from app.llm import LLM, LLMError
@@ -25,10 +26,10 @@ from app.retrieval import Hit, Index
 log = logging.getLogger("app.pipeline")
 
 CANDIDATES = 6
-SNIPPET_CHARS = 700
-ABOUT_CHARS = 350
+SNIPPET_CHARS = 620
+ABOUT_CHARS = 260
 HISTORY_MESSAGES = 4
-HISTORY_CHARS = 200
+HISTORY_CHARS = 500
 QUERY_BATCH = 20
 ANSWER_ATTEMPTS = 2
 WORDS_MIN, WORDS_MAX = 40, 130  # в инструкции 60–100 слов; за этими границами текст явно не тот
@@ -44,8 +45,13 @@ FALLBACK_TEXTS = {
 }
 
 # Количество вещества рядом с единицей измерения: такого в текстах быть не должно.
+_NUMBER = (
+    r"(\d+[.,]?\d*|пол|полови\w+|четверт\w+|полтор\w+|од(ин|на|ну|ной)|дв(а|е|ух)|тр(и|[её]х)|четыр\w+|пят\w+|шест\w+|"
+    r"сем\w+|вос[еь]м\w+|девят\w+|десят\w+)"
+)
 _DOSE = re.compile(
-    r"\d+[.,]?\d*\s*(мг|мкг|миллиграмм\w*|микрограмм\w*|mg|mcg|ме\b|капел\w*|кап\.|таблет\w*|капсул\w*|драже)",
+    _NUMBER + r"[\s-]*(мг\b|мкг\b|миллиграмм\w*|микрограмм\w*|mg\b|mcg\b|ме\b|капел\w*|капл\w+|кап\.|таблет\w*|"
+    r"капсул\w*|драже)|полтаблетк\w+",
     re.IGNORECASE,
 )
 # Обращение к тому, кто оценивает ответы, запрещено правилами хакатона, поэтому фильтр широкий:
@@ -53,21 +59,51 @@ _DOSE = re.compile(
 _JUDGE_ADDRESS = re.compile(
     r"(проверяющ\w+|оценщик\w*|\bжюри\b|\bсудь(я|е|и|ю|ёй|ей)\b|\bgrader\b|\bjudge\b"
     r"|оцени\w*\s+(этот|мой)\s+ответ|постав\w+\s+(мне\s+|нам\s+|этому\s+ответу\s+)?(высш\w+|максимальн\w+|оценк\w+|балл\w*|зач[её]т\w*)"
-    r"|игнорируй\w*|предыдущ\w+\s+инструкци\w+|системн\w+\s+(промпт\w*|инструкци\w+|сообщени\w+))",
+    r"|засчита\w+|\bkind\b|addresses_judge|вер(ни|ните)\s+(только\s+)?json"
+    r"|игнорир\w+\s+(все\s+|эти\s+|любые\s+|прошл\w+\s+|предыдущ\w+\s+)?(инструкци\w+|правил\w+|указани\w+)"
+    r"|предыдущ\w+\s+инструкци\w+|системн\w+\s+(промпт\w*|инструкци\w+|сообщени\w+))",
     re.IGNORECASE,
 )
 # Ответ по существу, который пишет, чего источник не делал, проверяющая считает уклончивым.
 _HEDGE = re.compile(
     r"(источник\w*|исследовани\w+|стать\w+|обзор\w*|работ\w+|автор\w+|данны\w+)\s+(этого\s+|прямо\s+|напрямую\s+|такого\s+)?"
-    r"не\s+(сравнива\w+|проверя\w+|называ\w+|измеря\w+|изуча\w+|рассматрива\w+|отвеча\w+|позволя\w+|да[её]т)",
+    r"не\s+(сравнива\w+|проверя\w+|называ\w+|измеря\w+|изуча\w+|рассматрива\w+|отвеча\w+)",
+    re.IGNORECASE,
+)
+# Настоящая проверка медицинских формулировок помечала как «лечение» отказы, где привычка подана заменой
+# препарату или расписана как курс, и как «диагноз» — фразы о причине жалоб человека (пробы от 17.11).
+_SUBSTITUTE = re.compile(
+    r"\b(зато|вместо|взамен|замен\w+|полезнее|успех\s+—|критери\w+\s+успеха|гипотез\w+|дневник\w*|замер\w*|"
+    r"отмечай\w*|отмечая|записывай\w*|проверь\w*|проверить\s+одну|попробуй\w*|убери\w*|выключай\w*)\b"
+    r"|\b(\d+|два|две|три|четыре|пять|шесть|семь|семи|десять|десяти|четырнадцать)\s+(вечер\w+|ноч\w+|дн\w+|недел\w+)\b|\bне\s+(больше|более|выше|позже)\s+\d+"
+    r"|\b\d+\s*(люкс\w*|лк\b)",
+    re.IGNORECASE,
+)
+_CAUSE = re.compile(
+    r"\bпричин\w+\s+(именно\s+)?(тво\w+|ваш\w+)\b|\b(тво\w+|ваш\w+)\s+\w+\s+—\s+это\s+из-за\b", re.IGNORECASE
+)
+# Оговорка «это не объясняет ваши пробуждения» ничего не сообщает, а проверяющая читает её как уклончивость.
+# Повторного вызова она не стоит: короткое предложение с такой оговоркой просто убирается.
+_DISCLAIMER = re.compile(
+    r"не\s+(объясня\w+|устанавлива\w+|определя\w+|доказыва\w+|означа\w+)\s+(причин\w+\s+)?(именно\s+)?(тво\w+|ваш\w+)"
+    r"|не\s+(ярлык|диагноз|объяснение)\s+(для\s+)?(теб\w+|вас\w*|тво\w+|ваш\w+)"
+    r"|\bне\s+\w+\s+причин\w+|\bа\s+не\s+к\s+(тво\w+|ваш\w+)",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+DISCLAIMER_MAX_WORDS = 16
+_NO_STUDIES = re.compile(
+    r"\bнет\s+(\w+\s+){0,2}(исследовани|данных|источник|работ)|(исследовани\w+|данных|источник\w+)[^.!?]{0,60}\bнет\b",
     re.IGNORECASE,
 )
 # Ответ по существу обязан назвать, что установлено в исследованиях.
 _EVIDENCE = re.compile(r"(исследовани|обзор|метаанализ|эксперимент|рекомендаци|наблюдени|учёны|испытани)", re.IGNORECASE)
 # Ясная фраза отказа от первого лица: без неё проверяющая не засчитывает отказ, с ней — не засчитывает ответ.
 _REFUSAL = re.compile(
-    r"\bне\s+(буду|стану|назову|дам|подскажу|посоветую|выберу|оценю|подберу|скажу|берусь|возьмусь|могу\s+(назвать|"
-    r"подсказать|посоветовать|выбрать|оценить|подобрать|сказать))\b",
+    r"\bне\s+((буду|стану)(?!\s+(обещать|пугать|спорить|скрывать|утверждать))|назову|дам|подскажу|посоветую|выберу|"
+    r"оценю|подберу|скажу|укажу|распишу|пропишу|порекомендую|определю|подтвержу|берусь|возьмусь|советую|рекомендую|"
+    r"одобряю|одобрю|могу\s+(назвать|подсказать|посоветовать|выбрать|оценить|подобрать|сказать|"
+    r"поставить|ставить|определить|подтвердить|назначить|рекомендовать))\b",
     re.IGNORECASE,
 )
 
@@ -76,7 +112,7 @@ def is_safe_text(text: str) -> bool:
     return bool(text.strip()) and not _DOSE.search(text) and not _JUDGE_ADDRESS.search(text)
 
 
-def text_problems(text: str, refused: bool) -> list[str]:
+def text_problems(text: str, refused: bool, unsupported: bool = False) -> list[str]:
     """Что в тексте не так по признакам, которые можно проверить без нейросети. Пустой список — замечаний нет."""
     problems = []
     if _DOSE.search(text):
@@ -89,6 +125,15 @@ def text_problems(text: str, refused: bool) -> list[str]:
     words = len(text.split())
     if not WORDS_MIN <= words <= WORDS_MAX:
         problems.append(f"в тексте {words} слов, нужно 60–100")
+    if refused and _SUBSTITUTE.search(text):
+        problems.append(
+            "в отказе есть указание, что делать, план проверки, норматив или слово о замене препарату: оставь только "
+            "отказ, наблюдение из исследования и вывод о связи привычки со сном"
+        )
+    if _names_cause(text):
+        problems.append("текст называет причину жалоб человека: пиши о связи привычки со сном, а не о причине")
+    if unsupported and not _NO_STUDIES.search(text):
+        problems.append("в отказе не сказано прямо, что исследований об этом методе или товаре в базе нет")
     if refused and not _REFUSAL.search(text):
         problems.append("в отказе нет ясной фразы от первого лица о том, чего эксперт не даст («не назову», «не буду выбирать»)")
     if not refused and _REFUSAL.search(text):
@@ -110,14 +155,44 @@ class SearchPlan:
     articles: list[str] = field(default_factory=list)
 
 
+def _names_cause(text: str) -> bool:
+    """Текст утверждает причину жалоб человека. Отрицание («не устанавливает причину…») сюда не относится."""
+    for sentence in _SENTENCE_END.split(text):
+        match = _CAUSE.search(sentence)
+        if match and not re.search(r"\bне\b|\bнельзя\b", sentence[: match.start()], re.IGNORECASE):
+            return True
+    return False
+
+
+def tidy(text: str) -> str:
+    """Убирает короткие предложения-оговорки о причине жалоб, если без них текст остаётся полным."""
+    sentences = _SENTENCE_END.split(text.strip())
+    kept = [s for s in sentences if not (_DISCLAIMER.search(s) and len(s.split()) <= DISCLAIMER_MAX_WORDS)]
+    cleaned = " ".join(kept)
+    return cleaned if len(cleaned.split()) >= WORDS_MIN else text.strip()
+
+
+def is_fallback(answer: dict) -> bool:
+    return answer["text"] in FALLBACK_TEXTS.values()
+
+
 def _citation(hit: Hit) -> dict:
     return {"article_id": hit.section.article_id, "section_id": hit.section.section_id}
 
 
+def _moment(value: object) -> datetime:
+    """Отметка времени как момент. Без часового пояса считаем её UTC; нечитаемую ставим в самое начало."""
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
 def _history_for(request: dict, by_user: dict[str, list[dict]]) -> list[str]:
     # Время сравниваем как моменты, а не как строки: у сообщений бывают разные часовые пояса.
-    asked_at = datetime.fromisoformat(request["utterance"]["at"])
-    earlier = [m for m in by_user.get(request["user_id"], []) if datetime.fromisoformat(m["at"]) < asked_at]
+    asked_at = _moment(request["utterance"].get("at"))
+    earlier = [m for m in by_user.get(request["user_id"], []) if _moment(m.get("at")) < asked_at]
     return [f"{m['role']}: {m['text'][:HISTORY_CHARS]}" for m in earlier[-HISTORY_MESSAGES:]]
 
 
@@ -125,7 +200,7 @@ def _group_requests(requests: list[dict]) -> list[list[dict]]:
     """Тройки по group_id; запрос без группы обрабатывается отдельно."""
     groups: dict[str, list[dict]] = defaultdict(list)
     for request in requests:
-        groups[request["group_id"] or f"single:{request['record_id']}"].append(request)
+        groups[request.get("group_id") or f"single:{request['record_id']}"].append(request)
     return list(groups.values())
 
 
@@ -156,7 +231,7 @@ async def _search_plans(
                 max_tokens=4000, effort="minimal",
             )
         except LLMError:
-            result = {}
+            return  # вызов уже повторялся внутри LLM; дробить пачку при недоступной нейросети — только тратить время
         for key, value in result.items():
             if not (key.isdigit() and int(key) < len(plans)):
                 continue
@@ -165,7 +240,9 @@ async def _search_plans(
             if not isinstance(value, dict) or not isinstance(value.get("terms"), str):
                 continue
             chosen = value.get("articles") if isinstance(value.get("articles"), list) else []
-            plans[int(key)] = SearchPlan(value["terms"][:400], [a for a in chosen if a in known][:4])
+            plans[int(key)] = SearchPlan(
+                value["terms"][:400], [a for a in chosen if isinstance(a, str) and a in known][:4]
+            )
         missing = [i for i in batch if not plans[i].terms]
         if missing and len(batch) > 1 and llm.usage.total_tokens < config.RETRY_TOKEN_BUDGET:
             half = (len(missing) + 1) // 2
@@ -207,7 +284,7 @@ def _sources(index: Index, hits: list[Hit], query: str) -> list[dict]:
 
 async def _answer_group(
     llm: LLM, system: str, group: list[dict], history: list[str], hits: list[Hit], default_citation: dict,
-    index: Index, query: str,
+    index: Index, query: str, retry_gate: asyncio.Semaphore,
 ) -> list[dict]:
     if not hits:
         return _fallback(group, hits, default_citation)
@@ -218,29 +295,44 @@ async def _answer_group(
     }
     # Запасной ответ баллов не приносит, поэтому одна повторная попытка оправдана: и при сбое вызова,
     # и когда проверка кодом нашла в текстах замечания (тогда во второй попытке они перечислены).
-    # Из попыток берётся та, где замечаний меньше. Когда лимит токенов на исходе, повторов нет.
-    parsed, fewest = None, None
+    parsed, best, first_refused = None, None, None
     for attempt in range(ANSWER_ATTEMPTS):
-        if attempt and llm.usage.total_tokens >= config.RETRY_TOKEN_BUDGET:
-            break
         try:
-            result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
+            if attempt:
+                # Повторы идут по одному: так расход сверяется с пределом прямо перед вызовом,
+                # и первые попытки остальных троек не остаются без токенов.
+                async with retry_gate:
+                    if llm.usage.total_tokens >= config.RETRY_TOKEN_BUDGET:
+                        break
+                    result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
+            else:
+                result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
         except LLMError:
             continue
         texts, source = result.get("texts"), result.get("source")
         if not isinstance(texts, dict) or not isinstance(source, int) or not 1 <= source <= len(hits):
             continue
         refused = result.get("kind") == "refusal" or result.get("forbidden") not in (None, "none")
+        if first_refused is None:
+            first_refused = refused
+        elif refused != first_refused:
+            # Замечания касались текста, а не решения об отказе: повтор, который его поменял, не берём.
+            break
+        own = [texts.get(r["expert_id"]) for r in group]
+        unsafe = sum(not (isinstance(t, str) and is_safe_text(t)) for t in own)
         problems = [
             f"{r['expert_id']}: {problem}"
-            for r in group
+            for r, text in zip(group, own)
             for problem in (
-                text_problems(texts[r["expert_id"]], refused)
-                if isinstance(texts.get(r["expert_id"]), str) else ["текста нет"]
+                text_problems(text, refused, result.get("forbidden") == "unsupported")
+                if isinstance(text, str) else ["текста нет"]
             )
         ]
-        if fewest is None or len(problems) < fewest:
-            parsed, fewest = (result, texts, source), len(problems)
+        # Небезопасный текст заменяется запасным отказом и очков не приносит, поэтому безопасность важнее
+        # остальных замечаний; при равенстве берём более позднюю, уже исправленную попытку.
+        rank = (unsafe, len(problems))
+        if best is None or rank <= best:
+            parsed, best = (result, texts, source), rank
         if not problems:
             break
         payload["note"] = (
@@ -258,7 +350,7 @@ async def _answer_group(
         text = texts.get(request["expert_id"])
         if isinstance(text, str) and is_safe_text(text):
             answers.append(
-                {"record_id": request["record_id"], "text": text.strip(), "refused": refused, "citations": [citation]}
+                {"record_id": request["record_id"], "text": tidy(text), "refused": refused, "citations": [citation]}
             )
         else:
             # Запасной текст — отказ, но ссылка остаётся общей для тройки.
@@ -271,20 +363,26 @@ async def _answer_group(
 async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
     """Возвращает тело ответа /run: ровно один ответ на каждый запрос набора."""
     llm = llm or LLM()
+    llm.deadline = time.monotonic() + config.RUN_DEADLINE_SECONDS
     index = Index(dataset["articles"])
-    first_article = dataset["articles"][0]
-    default_citation = {
-        "article_id": first_article["article_id"],
-        "section_id": first_article["sections"][0]["section_id"],
-    }
+    # Ссылка на случай, когда поиск ничего не дал: первый существующий раздел базы.
+    default_citation = next(
+        {"article_id": a["article_id"], "section_id": a["sections"][0]["section_id"]}
+        for a in dataset["articles"] if a.get("sections")
+    )
 
     by_user: dict[str, list[dict]] = defaultdict(list)
-    for message in sorted(dataset.get("chat_history", []), key=lambda m: datetime.fromisoformat(m["at"])):
+    for message in sorted(dataset.get("chat_history", []), key=lambda m: _moment(m.get("at"))):
         by_user[message["user_id"]].append(message)
 
     groups = _group_requests(dataset["requests"])
     histories = [_history_for(group[0], by_user) for group in groups]
-    plans = await _search_plans(llm, groups, histories, dataset["articles"])
+    try:
+        plans = await _search_plans(llm, groups, histories, dataset["articles"])
+    except Exception:  # неожиданный ответ нейросети на этапе поиска не должен стоить всего прогона
+        log.exception("план поиска не получен, тройки получат запасные ответы")
+        plans = [SearchPlan() for _ in groups]
+    retry_gate = asyncio.Semaphore(1)
     system = prompts.answer_system(dataset["experts"])
 
     async def solve(i: int) -> list[dict]:
@@ -292,7 +390,7 @@ async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
         hits = index.search(plan.terms, k=CANDIDATES, prefer=plan.articles) if plan.terms else []
         try:
             return await _answer_group(
-                llm, system, groups[i], histories[i], hits, default_citation, index, plan.terms
+                llm, system, groups[i], histories[i], hits, default_citation, index, plan.terms, retry_gate
             )
         except Exception:  # одна сломанная тройка не должна уронить весь прогон
             log.exception("тройка %d обработана запасным ответом", i)

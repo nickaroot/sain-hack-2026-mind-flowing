@@ -82,7 +82,8 @@ async def main() -> None:
         print("  промах:", *miss)
     u = llm.usage
     print(f"время {time.time() - started:.0f} с; вызовов {u.calls}; токенов {u.total_tokens} "
-          f"(вход {u.prompt_tokens}, выход {u.completion_tokens}, скрытых {u.reasoning_tokens}); сбоев {u.failures}")
+          f"(вход {u.prompt_tokens}, из кеша {getattr(u, 'cached_tokens', 0)}, выход {u.completion_tokens}, "
+          f"скрытых {u.reasoning_tokens}); сбоев {u.failures}")
 
 
 if __name__ == "__main__":
