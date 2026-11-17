@@ -247,6 +247,26 @@ def test_llm_survives_malformed_proxy_reply(monkeypatch):
         asyncio.run(llm_module.LLM().chat_json("s", "u", max_tokens=100))
 
 
+def test_llm_stops_calling_when_daily_limit_is_exhausted(monkeypatch):
+    seen = _proxy(monkeypatch, lambda body: (429, {"error": {"message": "tokens per day"}}))
+    monkeypatch.setattr(llm_module, "_retry_after", lambda response: 3600.0)
+    client = llm_module.LLM()
+    with pytest.raises(LLMError):
+        asyncio.run(client.chat_json("s", "u", max_tokens=100))
+    assert client.exhausted and len(seen) == 1
+    with pytest.raises(LLMError):
+        asyncio.run(client.chat_json("s", "u", max_tokens=100))
+    assert len(seen) == 1  # после исчерпания лимита к прокси больше не ходим
+
+
+def test_llm_retries_minute_limit_and_recovers(monkeypatch):
+    replies = iter([(429, {}), (503, {}), (200, _completion('{"ok": true}'))])
+    seen = _proxy(monkeypatch, lambda body: next(replies))
+    client = llm_module.LLM()
+    assert asyncio.run(client.chat_json("s", "u", max_tokens=100)) == {"ok": True}
+    assert len(seen) == 3 and not client.exhausted
+
+
 def test_final_dataset_without_requests(client, monkeypatch):
     async def final_dataset(token, dataset_code):
         return {**DATASET, "requests": []}

@@ -21,6 +21,7 @@ REQUEST_TIMEOUT_SECONDS = 120.0
 MAX_PARALLEL_CALLS = 4
 MIN_SECONDS_BETWEEN_CALLS = 2.2  # лимит прокси — 30 запросов в минуту, повторы тоже считаются
 MAX_RETRY_AFTER_SECONDS = 60.0
+LIMIT_PATIENCE_SECONDS = 150.0  # сколько терпим непрерывные 429, прежде чем считать суточный лимит исчерпанным
 
 
 class LLMError(RuntimeError):
@@ -79,9 +80,9 @@ def _parse_object(content: str):
 
 
 def _retry_after(response: httpx.Response) -> float:
-    """Пауза, которую просит прокси в заголовке Retry-After, в разумных пределах."""
+    """Сколько секунд прокси просит подождать (заголовок Retry-After); 0, если не сказал."""
     try:
-        return min(max(float(response.headers.get("retry-after", 0)), 0.0), MAX_RETRY_AFTER_SECONDS)
+        return max(float(response.headers.get("retry-after", 0)), 0.0)
     except ValueError:
         return 0.0
 
@@ -90,9 +91,30 @@ def _retry_after(response: httpx.Response) -> float:
 class LLM:
     usage: Usage = field(default_factory=Usage)
     deadline: float | None = None  # момент по time.monotonic(), после которого вызовы не начинаются
+    exhausted: bool = False  # суточный лимит кончился: дальнейшие вызовы бессмысленны и только тратят время
+    _limited_since: float | None = None  # когда началась непрерывная серия ответов 429
     _variant: int = 0  # номер набора необязательных параметров, который принимает модель
     _pace: asyncio.Lock = field(default_factory=asyncio.Lock)
     _next_start: float = 0.0
+
+    def _note_limit(self, retry_after: float) -> None:
+        """Отличает минутный лимит (проходит сам) от суточного (ждать бесполезно).
+
+        Минутный лимит снимается за минуту, а запросы у нас идут не чаще одного в 2,2 секунды. Поэтому
+        просьба подождать дольше двух минут или непрерывные отказы дольше LIMIT_PATIENCE_SECONDS
+        означают, что кончились токены за сутки.
+        """
+        now = time.monotonic()
+        if self._limited_since is None:
+            self._limited_since = now
+        if retry_after > 120 or now - self._limited_since > LIMIT_PATIENCE_SECONDS:
+            if not self.exhausted:
+                log.error("суточный лимит нейросети исчерпан: оставшиеся записи получат запасные ответы")
+            self.exhausted = True
+
+    async def _pause(self, tries: int, retry_after: float = 0.0) -> None:
+        if tries <= len(RETRY_PAUSES_SECONDS) and not self.exhausted:
+            await asyncio.sleep(max(RETRY_PAUSES_SECONDS[tries - 1], min(retry_after, MAX_RETRY_AFTER_SECONDS)))
 
     async def _wait_turn(self) -> None:
         """Запросы стартуют не чаще одного в MIN_SECONDS_BETWEEN_CALLS, сколько бы их ни шло параллельно."""
@@ -115,9 +137,11 @@ class LLM:
         headers = {"Authorization": f"Bearer {config.LLM_API_KEY}"}
         last_error = "нет попыток"
         async with self._gate:
-            for pause in (0, *RETRY_PAUSES_SECONDS, *(0,) * (len(_OPTION_VARIANTS) - 1)):
-                if pause:
-                    await asyncio.sleep(pause)
+            tries = 0
+            while tries <= len(RETRY_PAUSES_SECONDS):
+                if self.exhausted:
+                    last_error = "суточный лимит нейросети исчерпан"
+                    break
                 timeout = REQUEST_TIMEOUT_SECONDS
                 if self.deadline is not None:
                     timeout = min(timeout, self.deadline - time.monotonic())
@@ -134,22 +158,33 @@ class LLM:
                         )
                 except httpx.HTTPError as error:
                     last_error = type(error).__name__
-                    continue
-                if response.status_code == 429 or response.status_code >= 500:
-                    last_error = f"HTTP {response.status_code}"
-                    await asyncio.sleep(_retry_after(response))
+                    tries += 1
+                    await self._pause(tries)
                     continue
                 if response.status_code == 400 and variant < len(_OPTION_VARIANTS) - 1:
                     # Организаторы могут сменить модель через LLM_MODEL, а другая модель может не знать
                     # наших необязательных параметров. Тогда пробуем более простой набор и запоминаем его.
+                    # Попытку это не тратит.
                     if self._variant == variant:  # параллельные вызовы не должны перескочить через набор
                         self._variant = variant + 1
                         log.warning("нейросеть ответила 400: перехожу к набору параметров %d", self._variant)
                     last_error = "HTTP 400, упрощаем параметры запроса"
                     continue
+                if response.status_code == 429:
+                    last_error = "HTTP 429"
+                    self._note_limit(_retry_after(response))
+                    tries += 1
+                    await self._pause(tries, _retry_after(response))
+                    continue
+                if response.status_code >= 500:
+                    last_error = f"HTTP {response.status_code}"
+                    tries += 1
+                    await self._pause(tries, _retry_after(response))
+                    continue
                 if response.status_code != 200:
                     last_error = f"HTTP {response.status_code}"
                     break
+                self._limited_since = None  # прокси отвечает: лимит не исчерпан
                 try:
                     payload = response.json()
                     self.usage.add(payload.get("usage") or {})
@@ -161,10 +196,12 @@ class LLM:
                 except (TypeError, ValueError, KeyError, IndexError, AttributeError):
                     # прокси ответил 200, но не тем, что обещает протокол: это сбой одного вызова, а не прогона
                     last_error = "ответ не разбирается как JSON"
+                    tries += 1
                     continue
                 if isinstance(parsed, dict):
                     return parsed
                 last_error = "ответ не JSON-объект"
+                tries += 1
         self.usage.failures += 1
         log.warning("вызов нейросети не удался: %s", last_error)
         raise LLMError(last_error)

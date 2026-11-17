@@ -403,7 +403,10 @@ async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
     )
     rewritten = 0
     for i in order:
-        if llm.usage.total_tokens >= config.RETRY_TOKEN_BUDGET or time.monotonic() >= llm.deadline:
+        if (
+            llm.usage.total_tokens >= config.RETRY_TOKEN_BUDGET or time.monotonic() >= llm.deadline
+            or getattr(llm, "exhausted", False)
+        ):
             break
         if drafts[i] is not None:
             payloads[i]["note"] = (
