@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app import config, prompts
+from app import config, medical, prompts
 from app.llm import LLM, LLMError
 from app.retrieval import Hit, Index
 
@@ -31,7 +31,6 @@ ABOUT_CHARS = 260
 HISTORY_MESSAGES = 4
 HISTORY_CHARS = 500
 QUERY_BATCH = 20
-ANSWER_ATTEMPTS = 2
 WORDS_MIN, WORDS_MAX = 40, 130  # в инструкции 60–100 слов; за этими границами текст явно не тот
 EXPERT_IDS = ("clinician", "biohacker", "nutritionist")
 
@@ -109,7 +108,10 @@ _REFUSAL = re.compile(
 
 
 def is_safe_text(text: str) -> bool:
-    return bool(text.strip()) and not _DOSE.search(text) and not _JUDGE_ADDRESS.search(text)
+    return (
+        bool(text.strip()) and not _DOSE.search(text) and not _JUDGE_ADDRESS.search(text)
+        and medical.dictionary_match(text) is None
+    )
 
 
 def text_problems(text: str, refused: bool, unsupported: bool = False) -> list[str]:
@@ -120,6 +122,9 @@ def text_problems(text: str, refused: bool, unsupported: bool = False) -> list[s
             "в тексте есть количество вещества с единицей измерения: убери миллиграммы, капли и таблетки, "
             "кофеин пиши только в чашках, алкоголь — в бокалах"
         )
+    found = medical.dictionary_match(text)
+    if found:
+        problems.append(f"фраза «{found[1]}» попадает под запрет на медицинские формулировки: убери её")
     if _JUDGE_ADDRESS.search(text):
         problems.append("текст упоминает проверку ответов или инструкции: пиши только о сне человека")
     words = len(text.split())
@@ -282,75 +287,64 @@ def _sources(index: Index, hits: list[Hit], query: str) -> list[dict]:
     return sources
 
 
-async def _answer_group(
-    llm: LLM, system: str, group: list[dict], history: list[str], hits: list[Hit], default_citation: dict,
-    index: Index, query: str, retry_gate: asyncio.Semaphore,
-) -> list[dict]:
-    if not hits:
-        return _fallback(group, hits, default_citation)
-    payload = {
-        "history": history,
-        "utterance": group[0]["utterance"]["text"],
-        "sources": _sources(index, hits, query),
-    }
-    # Запасной ответ баллов не приносит, поэтому одна повторная попытка оправдана: и при сбое вызова,
-    # и когда проверка кодом нашла в текстах замечания (тогда во второй попытке они перечислены).
-    parsed, best, first_refused = None, None, None
-    for attempt in range(ANSWER_ATTEMPTS):
-        try:
-            if attempt:
-                # Повторы идут по одному: так расход сверяется с пределом прямо перед вызовом,
-                # и первые попытки остальных троек не остаются без токенов.
-                async with retry_gate:
-                    if llm.usage.total_tokens >= config.RETRY_TOKEN_BUDGET:
-                        break
-                    result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
-            else:
-                result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
-        except LLMError:
-            continue
-        texts, source = result.get("texts"), result.get("source")
-        if not isinstance(texts, dict) or not isinstance(source, int) or not 1 <= source <= len(hits):
-            continue
-        refused = result.get("kind") == "refusal" or result.get("forbidden") not in (None, "none")
-        if first_refused is None:
-            first_refused = refused
-        elif refused != first_refused:
-            # Замечания касались текста, а не решения об отказе: повтор, который его поменял, не берём.
-            break
-        own = [texts.get(r["expert_id"]) for r in group]
-        unsafe = sum(not (isinstance(t, str) and is_safe_text(t)) for t in own)
-        problems = [
-            f"{r['expert_id']}: {problem}"
-            for r, text in zip(group, own)
-            for problem in (
-                text_problems(text, refused, result.get("forbidden") == "unsupported")
-                if isinstance(text, str) else ["текста нет"]
-            )
-        ]
-        # Небезопасный текст заменяется запасным отказом и очков не приносит, поэтому безопасность важнее
-        # остальных замечаний; при равенстве берём более позднюю, уже исправленную попытку.
-        rank = (unsafe, len(problems))
-        if best is None or rank <= best:
-            parsed, best = (result, texts, source), rank
-        if not problems:
-            break
-        payload["note"] = (
-            "Прошлая попытка возвращена с замечаниями. Перепиши все три текста, исправь это и сохрани манеру "
-            "каждого эксперта. " + "; ".join(dict.fromkeys(problems))[:900]
-        )
-    if parsed is None:
-        return _fallback(group, hits, default_citation)
-    result, texts, source = parsed
-    refused = result.get("kind") == "refusal" or result.get("forbidden") not in (None, "none")
-    citation = _citation(hits[source - 1])
+@dataclass
+class Draft:
+    """Одна попытка ответа на тройку и то, что о ней сказала проверка кодом."""
 
+    texts: dict
+    source: int
+    refused: bool
+    unsafe: int
+    problems: list[str]
+
+    @property
+    def rank(self) -> tuple[int, int]:
+        # Небезопасный текст заменяется запасным отказом и очков не приносит, поэтому безопасность важнее.
+        return self.unsafe, len(self.problems)
+
+
+async def _attempt(llm: LLM, system: str, payload: dict, group: list[dict], sources: int) -> Draft | None:
+    """Один вызов на тройку. None — нейросеть не ответила или вернула не то."""
+    try:
+        result = await llm.chat_json(system, json.dumps(payload, ensure_ascii=False), max_tokens=3500, effort="low")
+    except LLMError:
+        return None
+    texts, source = result.get("texts"), result.get("source")
+    if not isinstance(texts, dict) or not isinstance(source, int) or not 1 <= source <= sources:
+        return None
+    refused = result.get("kind") == "refusal" or result.get("forbidden") not in (None, "none")
+    own = [texts.get(r["expert_id"]) for r in group]
+    problems = [
+        f"{r['expert_id']}: {problem}"
+        for r, text in zip(group, own)
+        for problem in (
+            text_problems(text, refused, result.get("forbidden") == "unsupported")
+            if isinstance(text, str) else ["текста нет"]
+        )
+    ]
+    unsafe = sum(not (isinstance(t, str) and is_safe_text(t)) for t in own)
+    return Draft(texts, source, refused, unsafe, problems)
+
+
+def _better(first: Draft | None, second: Draft | None) -> Draft | None:
+    """Какую из двух попыток оставить."""
+    if first is None or second is None:
+        return first or second
+    if second.refused != first.refused:
+        return first  # замечания касались текста, а не решения об отказе: повтор, который его поменял, не берём
+    return second if second.rank <= first.rank else first  # при равенстве — уже исправленная попытка
+
+
+def _answers(group: list[dict], draft: Draft | None, hits: list[Hit], default_citation: dict) -> list[dict]:
+    if draft is None:
+        return _fallback(group, hits, default_citation)
+    citation = _citation(hits[draft.source - 1])
     answers = []
     for request in group:
-        text = texts.get(request["expert_id"])
+        text = draft.texts.get(request["expert_id"])
         if isinstance(text, str) and is_safe_text(text):
             answers.append(
-                {"record_id": request["record_id"], "text": tidy(text), "refused": refused, "citations": [citation]}
+                {"record_id": request["record_id"], "text": tidy(text), "refused": draft.refused, "citations": [citation]}
             )
         else:
             # Запасной текст — отказ, но ссылка остаётся общей для тройки.
@@ -382,25 +376,48 @@ async def answer_dataset(dataset: dict, llm: LLM | None = None) -> dict:
     except Exception:  # неожиданный ответ нейросети на этапе поиска не должен стоить всего прогона
         log.exception("план поиска не получен, тройки получат запасные ответы")
         plans = [SearchPlan() for _ in groups]
-    retry_gate = asyncio.Semaphore(1)
     system = prompts.answer_system(dataset["experts"])
+    all_hits = [index.search(p.terms, k=CANDIDATES, prefer=p.articles) if p.terms else [] for p in plans]
+    payloads = [
+        {"history": histories[i], "utterance": groups[i][0]["utterance"]["text"],
+         "sources": _sources(index, all_hits[i], plans[i].terms)}
+        for i in range(len(groups))
+    ]
 
-    async def solve(i: int) -> list[dict]:
-        plan = plans[i]
-        hits = index.search(plan.terms, k=CANDIDATES, prefer=plan.articles) if plan.terms else []
+    async def attempt(i: int) -> Draft | None:
+        if not all_hits[i]:
+            return None
         try:
-            return await _answer_group(
-                llm, system, groups[i], histories[i], hits, default_citation, index, plan.terms, retry_gate
-            )
+            return await _attempt(llm, system, payloads[i], groups[i], len(all_hits[i]))
         except Exception:  # одна сломанная тройка не должна уронить весь прогон
-            log.exception("тройка %d обработана запасным ответом", i)
-            return _fallback(groups[i], hits, default_citation)
+            log.exception("тройка %d: попытка не удалась", i)
+            return None
 
-    solved = await asyncio.gather(*(solve(i) for i in range(len(groups))))
+    # Этап 1: первая попытка для каждой тройки. Этап 2: повторы — только после того, как первый ответ
+    # есть у всех, по одному и пока хватает токенов и времени. Так при нехватке суточного лимита
+    # страдает качество отдельных троек, а не наличие ответов.
+    drafts = list(await asyncio.gather(*(attempt(i) for i in range(len(groups)))))
+    order = sorted(
+        (i for i, d in enumerate(drafts) if all_hits[i] and (d is None or d.problems)),
+        key=lambda i: (drafts[i] is not None, *(-n for n in (drafts[i].rank if drafts[i] else (0, 0)))),
+    )
+    rewritten = 0
+    for i in order:
+        if llm.usage.total_tokens >= config.RETRY_TOKEN_BUDGET or time.monotonic() >= llm.deadline:
+            break
+        if drafts[i] is not None:
+            payloads[i]["note"] = (
+                "Прошлая попытка возвращена с замечаниями. Перепиши все три текста, исправь это и сохрани манеру "
+                "каждого эксперта. " + "; ".join(dict.fromkeys(drafts[i].problems))[:900]
+            )
+        drafts[i] = _better(drafts[i], await attempt(i))
+        rewritten += 1
+
+    solved = [_answers(groups[i], drafts[i], all_hits[i], default_citation) for i in range(len(groups))]
     by_record = {answer["record_id"]: answer for answers in solved for answer in answers}
     usage = llm.usage
     log.info(
-        "готово: вызовов %d, токенов %d (скрытых %d), сбоев %d",
-        usage.calls, usage.total_tokens, usage.reasoning_tokens, usage.failures,
+        "готово: вызовов %d, токенов %d (скрытых %d), сбоев %d, повторных попыток %d из %d намеченных",
+        usage.calls, usage.total_tokens, usage.reasoning_tokens, usage.failures, rewritten, len(order),
     )
     return {"requests": [by_record[r["record_id"]] for r in dataset["requests"]]}

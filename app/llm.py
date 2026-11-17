@@ -48,6 +48,36 @@ class Usage:
         self.cached_tokens += (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
 
 
+# Наборы необязательных параметров запроса от полного к самому простому.
+_OPTION_VARIANTS = (
+    ("max_completion_tokens", "reasoning_effort", "response_format"),
+    ("max_completion_tokens", "response_format"),
+    ("max_completion_tokens",),
+    ("max_tokens",),
+)
+
+
+def _request_options(variant: int, max_tokens: int, effort: str) -> dict:
+    values = {
+        "max_completion_tokens": max_tokens,
+        "max_tokens": max_tokens + 1000,  # без управления рассуждением модели нужен запас на скрытые токены
+        "reasoning_effort": effort,
+        "response_format": {"type": "json_object"},
+    }
+    return {name: values[name] for name in _OPTION_VARIANTS[variant]}
+
+
+def _parse_object(content: str):
+    """JSON из ответа модели. Без response_format модель может обернуть его в ```json или добавить фразу."""
+    try:
+        return json.loads(content)
+    except ValueError:
+        start, end = content.find("{"), content.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(content[start : end + 1])
+
+
 def _retry_after(response: httpx.Response) -> float:
     """Пауза, которую просит прокси в заголовке Retry-After, в разумных пределах."""
     try:
@@ -60,6 +90,7 @@ def _retry_after(response: httpx.Response) -> float:
 class LLM:
     usage: Usage = field(default_factory=Usage)
     deadline: float | None = None  # момент по time.monotonic(), после которого вызовы не начинаются
+    _variant: int = 0  # номер набора необязательных параметров, который принимает модель
     _pace: asyncio.Lock = field(default_factory=asyncio.Lock)
     _next_start: float = 0.0
 
@@ -74,12 +105,9 @@ class LLM:
 
     async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:
         """Один вызов с ответом в виде JSON-объекта. Бросает LLMError, если ответа получить не удалось."""
-        body = {
+        base = {
             "model": config.LLM_MODEL,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "max_completion_tokens": max_tokens,
-            "reasoning_effort": effort,
-            "response_format": {"type": "json_object"},
         }
         if not config.LLM_BASE_URL or not config.LLM_API_KEY:
             self.usage.failures += 1
@@ -87,7 +115,7 @@ class LLM:
         headers = {"Authorization": f"Bearer {config.LLM_API_KEY}"}
         last_error = "нет попыток"
         async with self._gate:
-            for pause in (0, *RETRY_PAUSES_SECONDS):
+            for pause in (0, *RETRY_PAUSES_SECONDS, *(0,) * (len(_OPTION_VARIANTS) - 1)):
                 if pause:
                     await asyncio.sleep(pause)
                 timeout = REQUEST_TIMEOUT_SECONDS
@@ -97,6 +125,8 @@ class LLM:
                         last_error = "вышло время, отведённое на прогон"
                         break
                 await self._wait_turn()
+                variant = self._variant
+                body = {**base, **_request_options(variant, max_tokens, effort)}
                 try:
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         response = await client.post(
@@ -109,8 +139,17 @@ class LLM:
                     last_error = f"HTTP {response.status_code}"
                     await asyncio.sleep(_retry_after(response))
                     continue
+                if response.status_code == 400 and variant < len(_OPTION_VARIANTS) - 1:
+                    # Организаторы могут сменить модель через LLM_MODEL, а другая модель может не знать
+                    # наших необязательных параметров. Тогда пробуем более простой набор и запоминаем его.
+                    if self._variant == variant:  # параллельные вызовы не должны перескочить через набор
+                        self._variant = variant + 1
+                        log.warning("нейросеть ответила 400: перехожу к набору параметров %d", self._variant)
+                    last_error = "HTTP 400, упрощаем параметры запроса"
+                    continue
                 if response.status_code != 200:
-                    raise LLMError(f"HTTP {response.status_code}")
+                    last_error = f"HTTP {response.status_code}"
+                    break
                 try:
                     payload = response.json()
                     self.usage.add(payload.get("usage") or {})
@@ -118,7 +157,7 @@ class LLM:
                     if choice.get("finish_reason") == "length":
                         last_error = "ответ обрезан по max_tokens"
                         break
-                    parsed = json.loads(choice["message"]["content"])
+                    parsed = _parse_object(choice["message"]["content"])
                 except (TypeError, ValueError, KeyError, IndexError, AttributeError):
                     # прокси ответил 200, но не тем, что обещает протокол: это сбой одного вызова, а не прогона
                     last_error = "ответ не разбирается как JSON"

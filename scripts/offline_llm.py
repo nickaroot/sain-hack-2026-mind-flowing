@@ -52,14 +52,17 @@ class CodexLLM(ReplayLLM):
     """Та же модель, что у организаторов, но через Codex CLI и подписку ChatGPT разработчика.
 
     Используется только для локальной оценки: ни ключей, ни этого кода в работающем решении нет.
-    Отличие от прокси организаторов: Codex добавляет свою системную инструкцию агента, поэтому
-    наши инструкции уходят одним пользовательским сообщением. Ответы кешируются в data/replay,
-    повторный прогон с теми же запросами ничего не тратит.
+    Наша системная инструкция подставляется вместо встроенной инструкции агента Codex
+    (настройка model_instructions_file), а данные запроса уходят пользовательским сообщением —
+    как при вызове через прокси организаторов. Отличия, которые убрать нельзя: Codex прикладывает
+    к запросу описания своих инструментов, не даёт задать температуру и не знает уровня minimal.
+    Ответы кешируются в data/replay, повторный прогон с теми же запросами ничего не тратит.
     """
 
     BINARY = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
     WORKDIR = ROOT / "codex-empty"  # пустая папка: модель запускается в песочнице только для чтения
     TIMEOUT_SECONDS = 300
+    SYSTEM_DIR = ROOT / "codex-system"
     ATTEMPTS = 3
 
     def __init__(self, name: str, model: str = "gpt-6-luna", parallel: int = 3):
@@ -80,14 +83,18 @@ class CodexLLM(ReplayLLM):
         raise LLMError("недостижимо")
 
     async def _call(self, system: str, user: str, effort: str) -> dict:
-        key = call_key(system, user)
+        key = call_key("codex-system-v2\n" + system, user)  # прежний кеш снят в другом режиме и сюда не подходит
         if key in self._cache:
             self.usage.calls += 1
             return self._cache[key]
-        prompt = (
-            f"{system}\n\nНе запускай команды и не читай файлы. Ниже данные запроса. "
-            f"Ответь только JSON-объектом.\n\n{user}"
-        )
+        prompt = user
+        system_path = self.SYSTEM_DIR / f"{call_key(system, '')}.txt"
+        if not system_path.exists():
+            self.SYSTEM_DIR.mkdir(parents=True, exist_ok=True)
+            # Прокси получает response_format=json_object; здесь тот же запрет на лишний текст дан словами.
+            system_path.write_text(
+                system + "\n\nОтветь одним JSON-объектом без пояснений. Инструменты не вызывай.", encoding="utf-8"
+            )
         out_path = self.WORKDIR / f"{key}.txt"
         async with self._gate:
             process = await asyncio.create_subprocess_exec(
@@ -95,6 +102,7 @@ class CodexLLM(ReplayLLM):
                 "--ephemeral", "-C", str(self.WORKDIR),
                 # Напрямую модель не знает уровня minimal (прокси организаторов его принимает): ближайший — none.
                 "-c", 'model_reasoning_effort="%s"' % ('none' if effort == 'minimal' else effort),
+                "-c", 'model_instructions_file="%s"' % system_path.resolve(),
                 "-o", str(out_path), "-",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
