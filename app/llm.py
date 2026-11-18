@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Protocol
 
 import httpx
 
@@ -92,6 +93,17 @@ def _retry_after(response: httpx.Response) -> float:
         return 0.0
 
 
+class JsonModel(Protocol):
+    """Что конвейеру нужно от нейросети. Кроме клиента прокси так умеют отвечать заглушка в тестах
+    и замена прокси для локальной оценки (scripts/offline_llm.py)."""
+
+    usage: Usage
+    deadline: float | None
+    exhausted: bool
+
+    async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict: ...
+
+
 @dataclass
 class LLM:
     usage: Usage = field(default_factory=Usage)
@@ -159,6 +171,11 @@ class LLM:
                         last_error = "вышло время, отведённое на прогон"
                         break
                 await self._wait_turn()
+                if self.deadline is not None:  # пока вызов ждал своей очереди, срок мог подойти
+                    timeout = min(timeout, self.deadline - time.monotonic())
+                    if timeout < 5:
+                        last_error = "вышло время, отведённое на прогон"
+                        break
                 variant = self._variant
                 body = {**base, **_request_options(variant, max_tokens, effort)}
                 try:

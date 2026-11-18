@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import chat, config, hack_api, llm as llm_module, pipeline
 from app.main import app
-from tests.test_run import BODY, DATASET, EXPERTS, REFUSAL, FakeLLM, good_answer
+from tests.fakes import BODY, DATASET, EXPERTS, REFUSAL, FakeLLM, good_answer
 
 LIVE = {**DATASET, "users": [{"user_id": "u1"}], "chat_history": [
     {"user_id": "u1", "role": "user", "at": "2026-11-10T22:00:00+03:00", "text": "Пью кофе в шесть вечера."},

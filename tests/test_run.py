@@ -1,6 +1,7 @@
 """/run должен отдавать тело, которое проходит схему Case4Answers, в том числе когда нейросеть недоступна."""
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,63 +10,14 @@ import jsonschema
 import pytest
 from fastapi.testclient import TestClient
 
-from app import hack_api, llm as llm_module, pipeline
-from app.llm import LLMError, Usage
+from app import hack_api, llm as llm_module, pipeline, text_checks
+from app.llm import LLMError
 from app.main import app
 from app.retrieval import Index
+from tests.fakes import BODY, DATASET, EXPERTS, REFUSAL, FakeLLM, good_answer
 
 SPEC = json.loads((Path(__file__).parent.parent / "docs/api/openapi.json").read_text())
 ANSWERS_SCHEMA = SPEC["components"]["schemas"]["Case4Answers"]
-EXPERTS = ["clinician", "biohacker", "nutritionist"]
-# Текст обычной длины: проверка кодом возвращает слишком короткие и слишком длинные тексты на доработку.
-BODY = "Кофе вечером мешает уснуть, в исследовании это видно по времени засыпания. " * 5
-REFUSAL = "Количество и время приёма я не назову, с этим к врачу. " + BODY
-
-DATASET = {
-    "meta": {"dataset_id": "case4-test"},
-    "chat_history": [],
-    "experts": [{"expert_id": e, "role": "роль", "speech_style": "стиль"} for e in EXPERTS],
-    "articles": [
-        {"article_id": "a1", "title": "Evening light and melatonin",
-         "sections": [{"section_id": "s1", "title": "Results", "text": "Evening light exposure suppressed melatonin."}]},
-        {"article_id": "a2", "title": "Caffeine timing and sleep",
-         "sections": [{"section_id": "s1", "title": "Results", "text": "Caffeine before bedtime reduced sleep time."}]},
-    ],
-    "requests": [
-        {"record_id": f"r{i}", "user_id": "u1", "expert_id": expert, "group_id": "g1",
-         "utterance": {"role": "user", "at": "2026-11-12T08:00:00+03:00", "text": "Мешает ли кофе вечером уснуть?"}}
-        for i, expert in enumerate(EXPERTS)
-    ],
-}
-
-
-class FakeLLM:
-    """Отвечает как нейросеть: сначала поисковые слова, затем ответ на тройку."""
-
-    def __init__(self, *answers: dict, fail: bool = False, plan=None):
-        self.usage = Usage()
-        self.answers = list(answers)  # по порядку попыток; последний ответ повторяется
-        self.fail = fail
-        self.plan = plan or {"terms": "caffeine bedtime sleep time", "articles": []}
-        self.payloads = []
-
-    async def chat_json(self, system, user, **_):
-        if self.fail:
-            raise LLMError("недоступна")
-        data = json.loads(user)
-        if "catalog" in data:
-            self.catalog = data["catalog"]
-            return {"0": self.plan}
-        self.payloads.append(data)
-        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-
-
-def good_answer(**overrides) -> dict:
-    base = {"asks": [{"q": "мешает ли кофе вечером", "ok": True}], "forbidden": "none", "kind": "answer",
-            "source": 1, "quote": "Caffeine before bedtime", "texts": {e: f"{BODY} Подпись {e}." for e in EXPERTS}}
-    return {**base, **overrides}
-
-
 @pytest.fixture
 def client(monkeypatch):
     seen = {"fetches": 0}
@@ -149,7 +101,22 @@ def test_failed_plan_batch_is_retried(client, monkeypatch):
     monkeypatch.setattr(hack_api, "fetch_dataset", two_groups)
     monkeypatch.setattr(pipeline, "LLM", lambda: FlakyPlan(good_answer(), plan={"terms": "caffeine", "articles": []}))
     body = client.post("/run", json={"case": 4, "dataset_code": "c"}, headers={"Authorization": "Bearer t"}).json()
-    assert not any(a["refused"] for a in body["requests"][:3])
+    assert len(body["requests"]) == 6 and not any(a["refused"] for a in body["requests"])  # ответ получили обе тройки
+    assert FlakyPlan.calls == 3  # неудачная пачка из двух реплик и по одному вызову на каждую половину
+
+
+def test_requests_to_the_model_stay_byte_for_byte_the_same(client, monkeypatch):
+    """Всё, что уходит нейросети на этом наборе: план поиска, первая попытка и повторная с замечаниями.
+
+    Инструкции подобраны замерами, и случайная правка в них или в сборке входа меняет качество ответов
+    незаметно для остальных тестов. Отпечаток обновляется только осознанно — вместе с замером на двух наборах.
+    """
+    dose = good_answer(texts={e: f"{BODY} Хватит 100 мг кофеина. Подпись {e}." for e in EXPERTS})
+    llm = FakeLLM(dose, good_answer())
+    run(client, monkeypatch, llm)
+    assert [json.loads(user).keys() >= {"note"} for _, user in llm.requests] == [False, False, True]
+    sent = "\x1e".join(f"{system}\x1f{user}" for system, user in llm.requests)
+    assert hashlib.sha256(sent.encode()).hexdigest() == "de8e8691632186c640c67689890e8206f1aabaaadbd3243df8f4a48e2f35459e"
 
 
 def test_repeated_run_reuses_finished_answers(client, monkeypatch):
@@ -172,6 +139,21 @@ def test_no_calls_after_run_deadline(client, monkeypatch):
     monkeypatch.setattr(pipeline, "LLM", pipeline.LLM)
     response = client.post("/run", json={"case": 4, "dataset_code": "c"}, headers={"Authorization": "Bearer t"})
     assert response.status_code == 200 and all(a["refused"] for a in response.json()["requests"])
+
+
+def test_no_call_when_deadline_passes_while_waiting_for_its_turn(monkeypatch):
+    calls = _proxy(monkeypatch, lambda body: (200, {"choices": [{"message": {"content": "{}"}}]}))
+    monkeypatch.setattr(llm_module, "_next_start", llm_module.time.monotonic() + 0.3)  # очередь на 0,3 секунды
+    client = llm_module.LLM()
+    client.deadline = llm_module.time.monotonic() + 5.2  # до ожидания запас есть, после — меньше пяти секунд
+    with pytest.raises(LLMError):
+        asyncio.run(client.chat_json("s", "u", max_tokens=100))
+    assert calls == []
+
+
+def test_fallback_refusals_carry_no_instructions():
+    for text in pipeline.FALLBACK_TEXTS.values():
+        assert text_checks.is_safe_text(text) and not text_checks._SUBSTITUTE.search(text)
 
 
 def test_malformed_plan_and_dataset_do_not_break_the_run(client, monkeypatch):
@@ -323,14 +305,14 @@ def test_search_ranks_matching_article_first():
     ("", False),
 ])
 def test_dose_filter(text, safe):
-    assert pipeline.is_safe_text(text) is safe
+    assert text_checks.is_safe_text(text) is safe
 
 
 def test_short_disclaimer_sentence_is_removed():
     text = "Дозу не назову. " + BODY + "Это наблюдение о группе, оно не объясняет ваши пробуждения. Значит, кофе связан со сном."
-    cleaned = pipeline.tidy(text)
+    cleaned = text_checks.tidy(text)
     assert "не объясняет" not in cleaned and cleaned.endswith("Значит, кофе связан со сном.")
-    assert pipeline.tidy("Это не объясняет ваши пробуждения.") == "Это не объясняет ваши пробуждения."  # иначе текст опустеет
+    assert text_checks.tidy("Это не объясняет ваши пробуждения.") == "Это не объясняет ваши пробуждения."  # иначе текст опустеет
 
 
 def test_organizers_dictionary_is_loaded_and_matches_their_examples():
@@ -361,6 +343,9 @@ def test_organizers_dictionary_is_loaded_and_matches_their_examples():
     ("Дозу не назову. Зато можно сделать маленькую замену: приглуши свет. " + BODY, True, False),
     ("Дозу не назову. Более мягкий свет вечером лучше согласуется с ранним засыпанием. " + BODY, True, True),
     ("Духота может быть причиной твоих пробуждений. " + BODY, False, False),
+    ("Дозу не назову. Вы пишете, что пьёте кофе до семи вечера и ложитесь в три ночи. " + BODY, True, True),  # время суток
+    ("Дозу не назову. Семь вечеров подряд записывай время отбоя. " + BODY, True, False),  # срок плана
+    ("Дозу не назову. Этого хватит на три ночи. " + BODY, True, False),
 ])
 def test_text_problems(text, refused, clean):
-    assert (not pipeline.text_problems(text, refused)) is clean
+    assert (not text_checks.text_problems(text, refused)) is clean

@@ -23,7 +23,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 from app.llm import LLM, LLMError
-from app.pipeline import is_safe_text
+from app.text_checks import is_safe_text
 from scripts import medcheck
 from scripts.offline_llm import CodexLLM
 

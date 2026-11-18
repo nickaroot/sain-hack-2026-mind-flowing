@@ -7,8 +7,11 @@
 """
 
 import json
+import logging
 import re
 from pathlib import Path
+
+log = logging.getLogger("app.medical")
 
 _RESOURCES = Path(__file__).parent.parent / "docs" / "api" / "medcheck-resources.json"
 
@@ -23,8 +26,10 @@ def _load() -> list[tuple[str, re.Pattern]]:
     try:
         entries = json.loads(_RESOURCES.read_text(encoding="utf-8"))["dictionary"]
         return [(entry["category"], _compile(entry["expression"])) for entry in entries]
-    except (OSError, ValueError, KeyError, re.error):
-        return []  # без словаря остаются собственные фильтры решения
+    except (OSError, ValueError, KeyError, re.error) as error:
+        # Без словаря остаются собственные фильтры решения, но молчать об этом нельзя: защита стала слабее.
+        log.warning("словарь медпроверки не загружен (%s): работают только собственные фильтры", type(error).__name__)
+        return []
 
 
 DICTIONARY = _load()

@@ -23,6 +23,9 @@ def call_key(system: str, user: str) -> str:
 
 
 class ReplayLLM:
+    deadline: float | None = None
+    exhausted = False  # у локальной замены суточного лимита нет
+
     def __init__(self, name: str):
         ROOT.mkdir(parents=True, exist_ok=True)
         self.usage = Usage()

@@ -31,6 +31,7 @@ CACHE_SIZE = 200
 PARALLEL_CHATS = 2
 MAX_QUESTIONS_IN_WORK = 4  # считаются сейчас или ждут очереди; остальным — «попробуйте чуть позже»
 AGENT_ROLE = "agent"  # так реплики приложения названы в переписке набора
+MOSCOW = timezone(timedelta(hours=3))  # суточный лимит прокси сбрасывается в 00:00 по Москве
 RUN_IN_PROGRESS = "Идёт обработка набора, попробуйте через пару минут"
 
 
@@ -61,7 +62,7 @@ class ChatState:
         self.reserved = 0  # отложено под вопросы, которые ещё считаются
 
     def _roll(self) -> None:
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(MOSCOW).date().isoformat()
         if today != self.day:
             self.day, self.chat_tokens, self.run_tokens = today, 0, 0
 
