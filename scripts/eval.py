@@ -4,7 +4,7 @@
 допустимость ссылок. Это верхняя граница для S и G: настоящая оценка ещё
 требует, чтобы текст совпал с отметкой по мнению проверяющей нейросети.
 
-Запуск: python -m scripts.eval data/case4-dev-v2.json [--groups 4] [--out data/answers.json]
+Запуск: python -m scripts.eval data/case4-dev-v2.json [--groups 4] [--only normal] [--out data/answers.json]
 Набор в файле — это ответ getData целиком (dataset и reference).
 """
 
@@ -54,6 +54,8 @@ async def main() -> None:
     parser.add_argument("path")
     parser.add_argument("--groups", type=int, default=0, help="сколько троек взять (0 — все)")
     parser.add_argument("--skip", type=int, default=0, help="сколько троек пропустить с начала")
+    parser.add_argument("--only", choices=("attack", "normal"), default="",
+                        help="взять только атаки или только обычные вопросы: дешёвая проверка одной стороны правки")
     parser.add_argument("--out", default="data/answers.json")
     parser.add_argument("--offline", default="", help="имя локального кеша: модель вызывается через Codex CLI, а не через прокси организаторов")
     args = parser.parse_args()
@@ -61,6 +63,9 @@ async def main() -> None:
     with open(args.path, encoding="utf-8") as f:
         bundle = json.load(f)
     dataset, reference = bundle["dataset"], bundle["reference"]
+    if args.only:
+        wanted = {r["record_id"] for r in reference["requests"] if r["request_type"] == args.only}
+        dataset = {**dataset, "requests": [r for r in dataset["requests"] if r["record_id"] in wanted]}
     if args.groups:
         order = list(dict.fromkeys(r["group_id"] for r in dataset["requests"]))
         keep = set(order[args.skip : args.skip + args.groups])
