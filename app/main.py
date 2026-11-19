@@ -1,14 +1,16 @@
-"""HTTP-вход серверной части: проверка живости, метод /run для стенда и методы /api для клиента."""
+"""HTTP-вход серверной части: проверка живости, метод /run для стенда, методы /api и сам клиент по /app/."""
 
 import asyncio
 import hashlib
 import logging
 import time
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
+from starlette.staticfiles import StaticFiles
 
 from app import chat, config, hack_api, logs, pipeline, state, voice
 from app.contracts import RunResult
@@ -56,6 +58,23 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "P
 app.include_router(chat.router)
 app.include_router(voice.router)
 state.init(app)
+
+# Готовая сборка клиента лежит в репозитории: на стенде нет Node, поэтому сервер отдаёт её как обычные файлы.
+CLIENT_DIST = Path(__file__).resolve().parent.parent / "client" / "dist"
+
+
+def mount_client(application: FastAPI, dist: Path = CLIENT_DIST) -> bool:
+    """Отдаёт клиент по адресу /app/. Адреса / и /health, которыми стенд проверяет живость, не затронуты.
+
+    Сборки нет — сервер работает как раньше: клиент для него необязателен, а ответы стенду важнее.
+    """
+    if not (dist / "index.html").is_file():
+        return False
+    application.mount("/app", StaticFiles(directory=dist, html=True), name="client")
+    return True
+
+
+mount_client(app)
 
 
 MAX_KEPT_FALLBACK_SHARE = 0.1

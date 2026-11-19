@@ -103,6 +103,14 @@ def check_client_methods(emulator_port: int) -> list[str]:
     experts = httpx.get(f"{base}/experts", timeout=30)
     if experts.status_code != 200 or len(experts.json().get("experts", [])) < 3:
         return [f"/api/experts: HTTP {experts.status_code}"]
+    # Сам клиент: сервер отдаёт готовую сборку, и её файлы должны попасть в образ стенда.
+    page = httpx.get(f"http://127.0.0.1:{APP_PORT}/app/", timeout=30)
+    script = page.text.split('src="./')[1].split('"')[0] if 'src="./' in page.text else ""
+    code = httpx.get(f"http://127.0.0.1:{APP_PORT}/app/{script}", timeout=30) if script else None
+    if page.status_code != 200 or code is None or code.status_code != 200:
+        problems.append(f"/app/: клиент не отдаётся (страница HTTP {page.status_code}, скрипт {script or 'не найден'})")
+    else:
+        print(f"клиент: /app/ отдаётся, страница {len(page.content)} байт, скрипт {len(code.content) // 1024} КБ")
     ids = [e["expert_id"] for e in experts.json()["experts"]]
     question = {"expert_id": ids[0], "text": "Мешает ли чашка кофе после обеда уснуть вечером?"}
     before, started = tokens(), time.time()

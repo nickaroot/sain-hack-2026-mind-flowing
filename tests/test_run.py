@@ -51,6 +51,26 @@ def test_health(client):
     assert client.get("/health").json()["status"] == "ok"
 
 
+def test_client_is_served_under_app_and_liveness_addresses_stay_as_they_were(client, tmp_path):
+    from fastapi import FastAPI
+
+    from app.main import mount_client
+
+    page = client.get("/app/")
+    assert page.status_code == 200 and "text/html" in page.headers["content-type"] and "<div id=\"root\">" in page.text
+    assert client.get("/app").status_code == 200  # без косой черты — перенаправление на /app/
+    script = page.text.split('src="./')[1].split('"')[0]  # сборка ссылается на свои файлы относительно: работает из /app/
+    assert client.get(f"/app/{script}").status_code == 200
+    assert client.get("/app/нет-такого-файла.js").status_code == 404
+    assert client.get("/").json() == client.get("/health").json() == {"status": "ok", "case": 4}
+    assert client.get("/api/sources/нет/нет").status_code in (404, 503)  # методы /api не перекрыты раздачей файлов
+    # Нет сборки — сервер поднимается без клиента; есть — отдаёт её.
+    bare = FastAPI()
+    assert mount_client(bare, tmp_path) is False and TestClient(bare).get("/app/").status_code == 404
+    (tmp_path / "index.html").write_text("<p>клиент</p>", encoding="utf-8")
+    assert mount_client(bare, tmp_path) is True and "клиент" in TestClient(bare).get("/app/").text
+
+
 def test_answers_share_citation_found_by_search(client, monkeypatch):
     answers = run(client, monkeypatch, FakeLLM(good_answer()))
     assert all(a["citations"] == [{"article_id": "a2", "section_id": "s1"}] for a in answers)
