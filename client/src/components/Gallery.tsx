@@ -91,7 +91,7 @@ export function Gallery({ personas, activeId, onActivate, onAbout, speech }: Pro
               aria-pressed={offset === 0}
               onClick={() => offset !== 0 && go(offset)}
             >
-              <Avatar persona={persona} size={208} state={offset !== 0 ? "idle" : speaking ? "speaking" : "active"} />
+              <Avatar persona={persona} size={208} state={offset !== 0 ? "idle" : speaking ? "speaking" : "active"} getLevel={voiceOn ? speech.level : undefined} />
             </button>
           )
         })}

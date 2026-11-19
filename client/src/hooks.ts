@@ -64,11 +64,24 @@ export function useSpeech() {
   const cache = useRef(new Map<string, string>())
   const token = useRef(0)
   const fake = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Громкость звучащего голоса: по ней аватар шевелит ртом. Без неё звук играет как обычно.
+  const context = useRef<AudioContext | null>(null)
+  const meter = useRef<{ node: AnalyserNode; data: Uint8Array<ArrayBuffer> } | null>(null)
+
+  const level = useCallback((): number | null => {
+    const current = meter.current
+    if (!current || !audio.current || audio.current.paused) return null
+    current.node.getByteTimeDomainData(current.data)
+    let peak = 0
+    for (const value of current.data) peak = Math.max(peak, Math.abs(value - 128))
+    return Math.min(1, peak / 48)
+  }, [])
 
   const stop = useCallback(() => {
     token.current += 1
     audio.current?.pause()
     audio.current = null
+    meter.current = null
     if (fake.current) clearTimeout(fake.current)
     if ("speechSynthesis" in window) speechSynthesis.cancel()
     setPlaying(null)
@@ -83,6 +96,13 @@ export function useSpeech() {
       const mine = token.current
       setError(null)
       setLoading(key)
+      // Звуковой контекст будим сразу по нажатию: позже браузер может этого не разрешить.
+      try {
+        context.current ??= new AudioContext()
+        void context.current.resume()
+      } catch {
+        context.current = null
+      }
       try {
         let url = cache.current.get(key) ?? null
         if (!url) {
@@ -99,6 +119,18 @@ export function useSpeech() {
         if (url) {
           const player = new Audio(url)
           audio.current = player
+          const ctx = context.current
+          if (ctx && ctx.state === "running") {
+            try {
+              const node = ctx.createAnalyser()
+              node.fftSize = 512
+              ctx.createMediaElementSource(player).connect(node)
+              node.connect(ctx.destination)
+              meter.current = { node, data: new Uint8Array(new ArrayBuffer(node.fftSize)) }
+            } catch {
+              meter.current = null
+            }
+          }
           player.onended = done
           player.onerror = done
           await player.play()
@@ -124,7 +156,7 @@ export function useSpeech() {
   )
 
   useEffect(() => stop, [stop])
-  return { loading, playing, error, toggle, stop }
+  return { loading, playing, error, toggle, stop, level }
 }
 
 export type RecorderState = "idle" | "recording" | "transcribing"

@@ -377,7 +377,7 @@ p {
   margin-left: -104px;
   border-radius: 50%;
   transform: translateX(calc(var(--gap) * var(--k))) scale(var(--near));
-  opacity: 0.5;
+  opacity: 0.6;
   transition: transform 0.46s var(--ease), opacity 0.46s var(--ease);
 }
 .slide[data-pos="center"] {
@@ -1357,4 +1357,98 @@ p {
 .app[data-screen="home"] .scroll {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+}
+
+/* ——— Аватар-персонаж: кадры мимики, дыхание, приветствие ——— */
+.avatar-live {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  overflow: hidden;
+}
+.avatar-live[data-large="true"] {
+  outline: 3px solid var(--acc);
+  outline-offset: 3px;
+  transition: outline-color 0.3s ease;
+}
+.avatar-live[data-state="speaking"] {
+  animation: ring 1.4s ease-out infinite;
+}
+.avatar-pop,
+.avatar-motion {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+}
+.avatar-pop {
+  animation: pop 0.55s cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+.avatar-live i {
+  position: absolute;
+  background-repeat: no-repeat;
+}
+.avatar-fade {
+  animation: frame-in 0.09s linear;
+}
+.avatar-live[data-state="active"] .avatar-motion,
+.avatar-live[data-state="listening"] .avatar-motion {
+  animation: float 3.6s ease-in-out infinite;
+}
+.avatar-live[data-state="speaking"] .avatar-motion {
+  animation: talk 0.9s ease-in-out infinite;
+}
+.avatar-live[data-state="thinking"] .avatar-motion {
+  animation: ponder 2.8s ease-in-out infinite;
+}
+@keyframes frame-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-1.4%) scale(1.012);
+  }
+}
+@keyframes talk {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  30% {
+    transform: translateY(-1.2%) rotate(-0.8deg);
+  }
+  70% {
+    transform: translateY(-0.4%) rotate(0.8deg);
+  }
+}
+@keyframes ponder {
+  0%,
+  100% {
+    transform: rotate(-1.6deg);
+  }
+  50% {
+    transform: rotate(1.6deg);
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.92, 1.06);
+  }
+  40% {
+    transform: scale(1.05, 0.96);
+  }
+  70% {
+    transform: scale(0.99, 1.01);
+  }
+  100% {
+    transform: none;
+  }
 }

@@ -3,12 +3,12 @@ import { customAvatars } from "../avatars"
 import type { AvatarState } from "../avatars"
 import type { Persona } from "../experts"
 
-type Props = { persona: Persona; state: AvatarState; size: number }
+type Props = { persona: Persona; state: AvatarState; size: number; getLevel?: () => number | null }
 
 /** Аватар эксперта: свой компонент из avatars/, а пока его нет — плейсхолдер с теми же состояниями. */
-export function Avatar({ persona, state, size }: Props) {
+export function Avatar({ persona, state, size, getLevel }: Props) {
   const Custom = customAvatars[persona.id]
-  if (Custom) return <Custom expertId={persona.id} name={persona.name} state={state} size={size} />
+  if (Custom) return <Custom expertId={persona.id} name={persona.name} state={state} size={size} getLevel={getLevel} />
 
   // Маленький размер — значок роли в плитке; большой — портретный круг-заготовка.
   if (size < 96) {

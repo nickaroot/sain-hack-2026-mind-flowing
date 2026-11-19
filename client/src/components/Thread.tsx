@@ -49,7 +49,7 @@ function Waiting({ startedAt, active, personas }: { startedAt: number; active: P
   return (
     <div className="waiting" role="status">
       <div className="waiting-row">
-        <Avatar persona={active} size={28} state="thinking" />
+        <Avatar persona={active} size={32} state="thinking" />
         <span className="dots-pulse" aria-hidden="true">
           {personas.slice(0, 4).map((persona) => (
             <i key={persona.id} style={{ "--h": persona.hue } as CSSProperties} />
@@ -164,7 +164,7 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
   return (
     <article className="reply">
       <header className="reply-head">
-        <Avatar persona={active} size={28} state={speech.playing === speechKey ? "speaking" : "active"} />
+        <Avatar persona={active} size={32} state={speech.playing === speechKey ? "speaking" : "active"} getLevel={speech.level} />
         <span>{active.name}</span>
       </header>
 

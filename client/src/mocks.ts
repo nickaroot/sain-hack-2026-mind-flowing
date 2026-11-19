@@ -132,7 +132,32 @@ export async function transcribe(): Promise<string> {
   return "Мешает ли чашка кофе после обеда уснуть вечером?"
 }
 
-export async function speak(): Promise<null> {
+/** ?tone — вместо синтезатора браузера вернуть звуковой файл: так проверяется путь настоящего голоса. */
+export async function speak(): Promise<Blob | null> {
   await wait(900)
-  return null
+  if (!params.has("tone")) return null
+  const rate = 16000
+  const seconds = 4
+  const samples = new Int16Array(rate * seconds)
+  for (let index = 0; index < samples.length; index++) {
+    const time = index / rate
+    // «Слоги»: тон, громкость которого то нарастает, то пропадает.
+    const syllable = Math.max(0, Math.sin(time * Math.PI * 4.2)) * (Math.sin(time * 2.1) > -0.6 ? 1 : 0)
+    samples[index] = Math.sin(time * 2 * Math.PI * 180) * syllable * 9000
+  }
+  const header = new DataView(new ArrayBuffer(44))
+  const text = (offset: number, value: string) => [...value].forEach((char, index) => header.setUint8(offset + index, char.charCodeAt(0)))
+  text(0, "RIFF")
+  header.setUint32(4, 36 + samples.byteLength, true)
+  text(8, "WAVEfmt ")
+  header.setUint32(16, 16, true)
+  header.setUint16(20, 1, true)
+  header.setUint16(22, 1, true)
+  header.setUint32(24, rate, true)
+  header.setUint32(28, rate * 2, true)
+  header.setUint16(32, 2, true)
+  header.setUint16(34, 16, true)
+  text(36, "data")
+  header.setUint32(40, samples.byteLength, true)
+  return new Blob([header, samples], { type: "audio/wav" })
 }
