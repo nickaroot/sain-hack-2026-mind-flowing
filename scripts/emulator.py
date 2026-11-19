@@ -10,6 +10,9 @@
 - прокси: API как у OpenAI, 30 запросов в минуту (скользящее окно) и суточный лимит токенов с
   ответом 429 и Retry-After, ответ 200 без choices, когда лимит max_completion_tokens съеден
   рассуждением (так ведёт себя настоящий прокси), поле usage с кешированными и скрытыми токенами;
+- голос на том же ключе (доступен с 18.11): распознавание gpt-transcribe и синтез tts-1, по 10 запросов в минуту
+  на каждое и в счёт общих 30, свой суточный бюджет в долларах с ответом 402, файл до 5 МБ; синтез возвращает
+  заглушку вместо mp3, а распознавание такой заглушки — исходный текст, так что цепочку можно проверить насквозь;
 - счёт токенов: коэффициенты измерены на настоящем прокси 17.11 (кириллица 3,41 символа на токен,
   остальное 4,47), ошибка на проверочном тексте около 6%.
 
@@ -26,12 +29,14 @@ import random
 import re
 import time
 from collections import deque
+from email.parser import BytesParser
+from email.policy import HTTP
 from pathlib import Path
 
 import jsonschema
 import uvicorn
 from fastapi import FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.llm import LLMError
 from scripts.offline_llm import CodexLLM
@@ -40,6 +45,11 @@ TEAM_TOKEN, RUN_TOKEN, LLM_KEY = "emu-team-token", "emu-run-token", "sk-bf-emula
 MODEL = "gpt-6-luna"
 CYRILLIC_CHARS_PER_TOKEN, OTHER_CHARS_PER_TOKEN, MESSAGE_OVERHEAD_TOKENS = 3.41, 4.47, 12
 REASONING_TOKENS = {"minimal": 0, "none": 0, "low": 450, "medium": 900, "high": 1800}  # средние по замерам
+STT_MODEL, TTS_MODEL, TTS_VOICES = "gpt-transcribe", "tts-1", {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+VOICE_RPM, VOICE_MAX_FILE_BYTES, TTS_MAX_CHARS = 10, 5 * 1024 * 1024, 4096
+# Цены выведены из документа организаторов: 3 доллара — это около 11 часов распознавания или 200 тыс. символов синтеза.
+STT_DOLLARS_PER_MB, TTS_DOLLARS_PER_CHAR = 3 / (11 * 60 * 0.5), 3 / 200_000
+FAKE_MP3 = b"ID3EMU-TTS:"  # заглушка синтеза: после метки идёт озвученный текст
 SPEC = json.loads((Path(__file__).parent.parent / "docs/api/openapi.json").read_text(encoding="utf-8"))
 ANSWERS_SCHEMA = SPEC["components"]["schemas"]["Case4Answers"]
 
@@ -63,7 +73,10 @@ def create_app(args: argparse.Namespace) -> FastAPI:
     starts: deque[float] = deque()
     rejected = set(filter(None, args.reject.split(",")))
     stats = {"llm_calls": 0, "tokens": args.spent, "http_429_minute": 0, "http_429_daily": 0, "faults": 0,
-             "peak_requests_per_minute": 0, "getdata_calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+             "peak_requests_per_minute": 0, "getdata_calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+             "stt_calls": 0, "tts_calls": 0, "stt_dollars": args.voice_spent, "tts_dollars": args.voice_spent,
+             "http_402_voice": 0}
+    voice_starts: dict[str, deque[float]] = {"stt": deque(), "tts": deque()}
     rng = random.Random(args.seed)
 
     def bearer(authorization: str) -> str:
@@ -198,6 +211,68 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                       "completion_tokens_details": {"reasoning_tokens": reasoning}},
         }
 
+    # ---------- голос: тот же ключ, общий лимит запросов в минуту, свой суточный бюджет ----------
+
+    def voice_gate(kind: str, authorization: str) -> JSONResponse | None:
+        """Проверки, общие для распознавания и синтеза. None — запрос принят и учтён."""
+        if bearer(authorization) != LLM_KEY:
+            return llm_error(401, "invalid api key")
+        now = time.monotonic()
+        for window in (starts, voice_starts[kind]):
+            while window and now - window[0] >= 60:
+                window.popleft()
+        if len(starts) >= args.rpm or len(voice_starts[kind]) >= VOICE_RPM:
+            stats["http_429_minute"] += 1
+            return llm_error(429, "rate limit: requests per minute", {"Retry-After": "60"})
+        if stats[f"{kind}_dollars"] >= args.voice_budget:
+            stats["http_402_voice"] += 1
+            return llm_error(402, f"daily {kind} budget exceeded")
+        starts.append(now)
+        voice_starts[kind].append(now)
+        stats["peak_requests_per_minute"] = max(stats["peak_requests_per_minute"], len(starts))
+        return None
+
+    @app.post("/v1/audio/transcriptions")
+    async def transcriptions(request: Request, authorization: str = Header(default="")):
+        body = await request.body()
+        if len(body) > VOICE_MAX_FILE_BYTES + 4096:  # прокси не принимает файл больше 5 МБ
+            return llm_error(413, "file is too large")
+        refused = voice_gate("stt", authorization)
+        if refused:
+            return refused
+        message = BytesParser(policy=HTTP).parsebytes(
+            b"Content-Type: " + request.headers.get("content-type", "").encode() + b"\r\n\r\n" + body
+        )
+        parts = {part.get_param("name", header="content-disposition"): part for part in message.iter_parts()}
+        field = lambda name: (parts[name].get_payload(decode=True) or b"").decode().strip() if name in parts else ""  # noqa: E731
+        if field("model") != STT_MODEL:
+            return llm_error(400, f"model {field('model')!r} is not available for transcription")
+        if field("response_format") not in ("", "json"):
+            return llm_error(400, "response_format must be json")
+        filename = parts["file"].get_filename() if "file" in parts else None
+        if not filename or filename.rsplit(".", 1)[-1] not in ("mp3", "wav", "webm", "m4a", "ogg", "flac"):
+            return llm_error(400, "unsupported or missing file")
+        audio = parts["file"].get_payload(decode=True) or b""
+        stats["stt_calls"] += 1
+        stats["stt_dollars"] += len(audio) / 1_000_000 * STT_DOLLARS_PER_MB
+        text = audio[len(FAKE_MP3):].decode(errors="replace") if audio.startswith(FAKE_MP3) else args.voice_text
+        return {"text": text}
+
+    @app.post("/v1/audio/speech")
+    async def speech(request: Request, authorization: str = Header(default="")):
+        refused = voice_gate("tts", authorization)
+        if refused:
+            return refused
+        body = await request.json()
+        text = body.get("input")
+        if body.get("model") != TTS_MODEL or body.get("voice") not in TTS_VOICES:
+            return llm_error(400, "unknown model or voice")
+        if not isinstance(text, str) or not text or len(text) > TTS_MAX_CHARS or body.get("response_format", "mp3") != "mp3":
+            return llm_error(400, "input must be 1-4096 characters, response_format mp3")
+        stats["tts_calls"] += 1
+        stats["tts_dollars"] += len(text) * TTS_DOLLARS_PER_CHAR
+        return Response(content=FAKE_MP3 + text.encode(), media_type="audio/mpeg")
+
     return app
 
 
@@ -213,6 +288,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reject", default="", help="параметры запроса, на которые прокси отвечает 400 (смена модели)")
     parser.add_argument("--fault-rate", type=float, default=0.0, help="доля вызовов, которые получают сбой")
     parser.add_argument("--parallel", type=int, default=4)
+    parser.add_argument("--voice-budget", type=float, default=3.0, help="суточный бюджет голоса в долларах, на распознавание и на синтез")
+    parser.add_argument("--voice-spent", type=float, default=0.0, help="сколько бюджета голоса уже потрачено")
+    parser.add_argument("--voice-text", default="Мешает ли чашка кофе после обеда уснуть вечером?",
+                        help="что возвращает распознавание настоящей записи")
     parser.add_argument("--seed", type=int, default=23)
     return parser.parse_args(argv)
 

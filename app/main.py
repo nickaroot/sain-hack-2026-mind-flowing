@@ -9,7 +9,7 @@ from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app import chat, config, hack_api, pipeline
+from app import chat, config, hack_api, pipeline, voice
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("app")
@@ -22,14 +22,15 @@ app = FastAPI(title="Mind-flowing · Кейс 4", docs_url=None, redoc_url=None)
 class ApiBodyLimit:
     """Методы для клиента открыты всем, а памяти 512 МБ: тело запроса к /api не читается дальше предела."""
 
-    def __init__(self, inner, max_bytes: int):
-        self.inner, self.max_bytes = inner, max_bytes
+    def __init__(self, inner, max_bytes: int, larger: dict[str, int] | None = None):
+        self.inner, self.default, self.larger = inner, max_bytes, larger or {}
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope["path"].startswith("/api"):
             return await self.inner(scope, receive, send)
+        max_bytes = self.larger.get(scope["path"], self.default)  # запись голоса больше вопроса текстом
         declared = dict(scope["headers"]).get(b"content-length", b"")
-        if declared.isdigit() and int(declared) > self.max_bytes:
+        if declared.isdigit() and int(declared) > max_bytes:
             return await JSONResponse({"detail": "Слишком длинный запрос"}, status_code=413)(scope, receive, send)
         seen = 0
 
@@ -38,19 +39,22 @@ class ApiBodyLimit:
             message = await receive()
             if message["type"] == "http.request":  # длина не объявлена или объявлена неверно: считаем сами
                 seen += len(message.get("body", b""))
-                if seen > self.max_bytes:
+                if seen > max_bytes:
                     raise HTTPException(413, "Слишком длинный запрос")
             return message
 
         await self.inner(scope, limited, send)
 
 
-app.add_middleware(ApiBodyLimit, max_bytes=config.API_MAX_BODY_BYTES)
+app.add_middleware(
+    ApiBodyLimit, max_bytes=config.API_MAX_BODY_BYTES, larger={"/api/transcribe": config.VOICE_MAX_AUDIO_BYTES}
+)
 # Клиент на финальном показе открывают в браузере на компьютере организаторов, а серверная часть работает
 # на стенде: это разные адреса, и без разрешения браузер не пустит запросы. Учётных данных в запросах нет.
 # Добавлен последним, то есть стоит снаружи: заголовки получают и отказы предыдущего слоя.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 app.include_router(chat.router)
+app.include_router(voice.router)
 
 # Последний полученный набор: после /run финального показа клиент работает с ним.
 app.state.dataset = None
@@ -60,6 +64,7 @@ app.state.runs = {}
 # Прошёл ли в этом процессе прогон набора: после него разговорам в клиенте отдаётся больший запас токенов.
 app.state.run_finished = False
 app.state.chat = None
+app.state.voice = None
 
 
 MAX_KEPT_FALLBACK_SHARE = 0.1

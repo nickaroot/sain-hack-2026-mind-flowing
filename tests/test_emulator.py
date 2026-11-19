@@ -77,3 +77,22 @@ def test_token_estimate_matches_proxy_measurements():
     # Замеры настоящего прокси 17.11: 1800 символов русского текста — около 473 токенов.
     text = ("Вечерний свет связан с более поздним временем сна. " * 40)[:1800]
     assert 430 < emulator.estimate_tokens(text) < 520
+
+
+def test_voice_endpoints_follow_the_documented_limits(make_client):
+    client = make_client("--voice-budget", "0.01")
+    spoken = client.post("/v1/audio/speech", headers=LLM,
+                         json={"model": "tts-1", "voice": "nova", "input": "Да, кофе вечером мешает.", "response_format": "mp3"})
+    assert spoken.status_code == 200 and spoken.headers["content-type"] == "audio/mpeg"
+    heard = client.post("/v1/audio/transcriptions", headers=LLM, files={"file": ("question.mp3", spoken.content, "audio/mpeg")},
+                        data={"model": "gpt-transcribe", "language": "ru", "response_format": "json"})
+    assert heard.json() == {"text": "Да, кофе вечером мешает."}  # заглушка синтеза распознаётся обратно в текст
+    wrong_model = client.post("/v1/audio/speech", headers=LLM, json={"model": "gpt-6-luna", "voice": "nova", "input": "Да."})
+    srt = client.post("/v1/audio/transcriptions", headers=LLM, files={"file": ("q.webm", b"abc", "audio/webm")},
+                      data={"model": "gpt-transcribe", "response_format": "srt"})
+    assert wrong_model.status_code == 400 and srt.status_code == 400
+    assert client.post("/v1/audio/speech", json={"model": "tts-1", "voice": "nova", "input": "Да."}).status_code == 401
+    long_text = {"model": "tts-1", "voice": "nova", "input": "я" * 700, "response_format": "mp3"}
+    assert client.post("/v1/audio/speech", headers=LLM, json=long_text).status_code == 200  # бюджет в один цент исчерпан
+    assert client.post("/v1/audio/speech", headers=LLM, json=long_text).status_code == 402
+    assert client.get("/_emulator/stats").json()["tts_calls"] == 2

@@ -131,6 +131,33 @@ def check_client_methods(emulator_port: int) -> list[str]:
     return problems
 
 
+def check_voice(emulator_port: int) -> list[str]:
+    """Голос насквозь: ответ озвучивается, запись распознаётся, повторное прослушивание не тратит бюджет."""
+    base, problems = f"http://127.0.0.1:{APP_PORT}/api", []
+    stats = lambda: httpx.get(f"http://127.0.0.1:{emulator_port}/_emulator/stats", timeout=10).json()  # noqa: E731
+    phrase = "Да, чашка кофе после обеда может мешать уснуть."
+    spoken = httpx.post(f"{base}/speak", json={"text": phrase, "expert_id": "nutritionist"},
+                        headers={"Origin": "http://localhost:5173"}, timeout=120)
+    if spoken.status_code != 200 or spoken.headers.get("content-type") != "audio/mpeg" or not spoken.content:
+        return [f"/api/speak: HTTP {spoken.status_code} {spoken.text[:200]}"]
+    if spoken.headers.get("access-control-allow-origin") != "*":
+        problems.append("/api/speak: браузер с другого адреса не получит звук (нет заголовка CORS)")
+    again = httpx.post(f"{base}/speak", json={"text": phrase, "expert_id": "nutritionist"}, timeout=120)
+    heard = httpx.post(f"{base}/transcribe", content=spoken.content, headers={"Content-Type": "audio/mpeg"}, timeout=120)
+    after = stats()
+    print(f"голос: синтез {len(spoken.content)} байт, распознано: {heard.json().get('text', heard.text)[:60]!r}; "
+          f"обращений к прокси: синтез {after['tts_calls']}, распознавание {after['stt_calls']}")
+    if heard.status_code != 200 or heard.json().get("text") != phrase:
+        problems.append(f"/api/transcribe: HTTP {heard.status_code}, текст не совпал с озвученным")
+    if again.content != spoken.content or after["tts_calls"] != 1:
+        problems.append("/api/speak: повторное прослушивание обратилось к прокси ещё раз")
+    too_big = httpx.post(f"{base}/transcribe", content=b"\x00" * (5 * 1024 * 1024 + 1),
+                         headers={"Content-Type": "audio/webm"}, timeout=120)
+    if too_big.status_code != 413:
+        problems.append(f"/api/transcribe: запись больше 5 МБ получила HTTP {too_big.status_code} вместо 413")
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--out", default="data/stand-check-answers.json")
@@ -206,6 +233,7 @@ def main() -> None:
 
         if not args.no_chat and response.status_code == 200:
             problems += check_client_methods(args.port)
+            problems += check_voice(args.port)
 
         state = json.loads(sh("docker", "inspect", "--format", "{{json .State}}", CONTAINER).stdout)
         print(f"память: пик {peak['mib']:.0f} МиБ из 512; OOMKilled: {state['OOMKilled']}; работает: {state['Running']}")

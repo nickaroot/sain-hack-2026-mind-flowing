@@ -30,6 +30,20 @@ LIMIT_PATIENCE_SECONDS = 150.0  # сколько терпим непрерывн
 _next_start = 0.0
 
 
+async def wait_turn() -> None:
+    """Очередь на обращение к прокси: старты не чаще одного в MIN_SECONDS_BETWEEN_CALLS для всего процесса.
+
+    Через неё идут и вызовы нейросети, и голос: у ключа один лимит запросов в минуту на всё.
+    Место в очереди занимается без await между чтением и записью, поэтому замок не нужен.
+    """
+    global _next_start
+    now = time.monotonic()
+    start = max(now, _next_start)
+    _next_start = start + MIN_SECONDS_BETWEEN_CALLS
+    if start > now:
+        await asyncio.sleep(start - now)
+
+
 class LLMError(RuntimeError):
     pass
 
@@ -135,16 +149,7 @@ class LLM:
             await asyncio.sleep(pause)
 
     async def _wait_turn(self) -> None:
-        """Запросы стартуют не чаще одного в MIN_SECONDS_BETWEEN_CALLS — все, от любого экземпляра LLM.
-
-        Место в очереди занимается без await между чтением и записью, поэтому замок не нужен.
-        """
-        global _next_start
-        now = time.monotonic()
-        start = max(now, _next_start)
-        _next_start = start + MIN_SECONDS_BETWEEN_CALLS
-        if start > now:
-            await asyncio.sleep(start - now)
+        await wait_turn()
     _gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(MAX_PARALLEL_CALLS))
 
     async def chat_json(self, system: str, user: str, *, max_tokens: int, effort: str = "low") -> dict:

@@ -88,7 +88,8 @@ def state_of(app: FastAPI) -> ChatState:
     return app.state.chat
 
 
-def _run_active(app: FastAPI) -> bool:
+def run_active(app: FastAPI) -> bool:
+    """Идёт ли прогон набора: на это время методы клиента уступают ему лимиты прокси."""
     return any(not task.done() for task in app.state.runs.values())
 
 
@@ -174,7 +175,7 @@ def _live_dataset(dataset: dict, body: ChatRequest, user_id: str) -> dict:
 
 def _admit(app: FastAPI, state: ChatState) -> None:
     """Можно ли считать новый вопрос. Пропускает — и сразу резервирует под него токены."""
-    if _run_active(app):
+    if run_active(app):
         # Прогон набора и разговоры делят лимиты прокси: прогон важнее.
         raise HTTPException(503, RUN_IN_PROGRESS, headers={"Retry-After": "60"})
     if _frozen(app):
@@ -191,7 +192,7 @@ async def _compute(app: FastAPI, state: ChatState, key: str, dataset: dict, body
     llm = None
     try:
         async with state.gate:
-            if _run_active(app):  # прогон начался, пока вопрос ждал очереди
+            if run_active(app):  # прогон начался, пока вопрос ждал очереди
                 raise HTTPException(503, RUN_IN_PROGRESS, headers={"Retry-After": "60"})
             llm = pipeline.LLM()
             answers = await pipeline.answer_dataset(
