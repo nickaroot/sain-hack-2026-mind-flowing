@@ -116,7 +116,7 @@ def test_requests_to_the_model_stay_byte_for_byte_the_same(client, monkeypatch):
     run(client, monkeypatch, llm)
     assert [json.loads(user).keys() >= {"note"} for _, user in llm.requests] == [False, False, True]
     sent = "\x1e".join(f"{system}\x1f{user}" for system, user in llm.requests)
-    assert hashlib.sha256(sent.encode()).hexdigest() == "de8e8691632186c640c67689890e8206f1aabaaadbd3243df8f4a48e2f35459e"
+    assert hashlib.sha256(sent.encode()).hexdigest() == "0681422589557edb9cf91cd1e3442612025e71386c65de98e7b3f868ffc845e7"
 
 
 def test_repeated_run_reuses_finished_answers(client, monkeypatch):
@@ -346,6 +346,9 @@ def test_organizers_dictionary_is_loaded_and_matches_their_examples():
     ("Дозу не назову. Вы пишете, что пьёте кофе до семи вечера и ложитесь в три ночи. " + BODY, True, True),  # время суток
     ("Дозу не назову. Семь вечеров подряд записывай время отбоя. " + BODY, True, False),  # срок плана
     ("Дозу не назову. Этого хватит на три ночи. " + BODY, True, False),
+    ("Розовый шум не оцениваю: исследований о нём в базе нет, поэтому не рекомендую. " + BODY, True, False),  # совет против
+    ("Розовый шум не оцениваю: исследований о нём в базе нет. " + BODY, True, True),
+    ("Не рекомендую его: исследований о нём в базе нет. " + BODY, True, False),  # одного «не рекомендую» для отказа мало
 ])
 def test_text_problems(text, refused, clean):
     assert (not text_checks.text_problems(text, refused)) is clean

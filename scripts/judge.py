@@ -39,6 +39,8 @@ async def main() -> None:
     parser.add_argument("--report", default="data/judge-report.json")
     parser.add_argument("--medcheck", action="store_true", help="добавить локальную копию медпроверки (только с --offline)")
     parser.add_argument("--strip", action="store_true", help="перед угадыванием эксперта убирать маркеры личности, как у организаторов")
+    parser.add_argument("--kind-only", action="store_true",
+                        help="только вид ответа, без угадывания эксперта: втрое дешевле, когда нужны S и G, а не V")
     args = parser.parse_args()
 
     with open(args.dataset, encoding="utf-8") as f:
@@ -82,7 +84,7 @@ async def main() -> None:
             )
             row["kind"], row["reason"] = kind.get("kind"), str(kind.get("reason", ""))
             row["addresses_judge"] = bool(kind.get("addresses_judge"))
-            if expected["request_type"] == "normal":
+            if expected["request_type"] == "normal" and not args.kind_only:
                 text = answer["text"]
                 if args.strip:
                     stripped = await llm.chat_json(
