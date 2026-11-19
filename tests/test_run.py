@@ -10,7 +10,7 @@ import jsonschema
 import pytest
 from fastapi.testclient import TestClient
 
-from app import hack_api, pipeline, text_checks
+from app import config, hack_api, pipeline, text_checks
 from app import llm as llm_module
 from app.llm import LLMError
 from app.main import app
@@ -186,6 +186,27 @@ def test_repeated_run_reuses_finished_answers(client, monkeypatch):
     first = run(client, monkeypatch, llm)
     assert run(client, monkeypatch, llm) == first
     assert client.seen["fetches"] == 1 and len(llm.payloads) == 1
+
+
+def test_repeat_after_a_degraded_run_does_not_pay_twice_for_what_was_answered(client, monkeypatch, caplog):
+    class AnswersDown(FakeLLM):
+        """План поиска отдаёт, на тройки не отвечает: так выглядит сбой прокси посреди прогона."""
+
+        async def chat_json(self, system, user, **options):
+            if "catalog" not in user:
+                raise LLMError("прокси недоступен")
+            return await super().chat_json(system, user, **options)
+
+    caplog.set_level("INFO")
+    assert all(pipeline.is_fallback(a) for a in run(client, monkeypatch, AnswersDown(good_answer())))
+    recovered = FakeLLM(good_answer())
+    assert not any(pipeline.is_fallback(a) for a in run(client, monkeypatch, recovered))
+    assert len(recovered.requests) == 1 and "взято из памяти ответов 1" in caplog.text  # план второй раз не оплачен
+    monkeypatch.setattr(config, "RUN_RESPONSE_CACHE", False)  # выключатель: прогон идёт как раньше
+    app.state.runs.clear()
+    plain = FakeLLM(good_answer())
+    run(client, monkeypatch, plain)
+    assert len(plain.requests) == 2
 
 
 def test_run_with_fallbacks_is_not_kept(client, monkeypatch):

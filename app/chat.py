@@ -13,13 +13,13 @@ import hashlib
 import json
 import logging
 import time
-from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app import config, hack_api, pipeline
+from app.cache import BoundedCache, ResponseCache
 from app.contracts import Dataset, ExpertData, Message, Utterance
 from app.retrieval import Index
 from app.state import moscow_day, run_active
@@ -55,7 +55,10 @@ class ChatState:
     def __init__(self) -> None:
         self.loading = asyncio.Lock()
         self.gate = asyncio.Semaphore(PARALLEL_CHATS)
-        self.cache: OrderedDict[str, dict] = OrderedDict()
+        self.cache: BoundedCache[dict] = BoundedCache("ответы разговоров", CACHE_SIZE)
+        # Ответы нейросети для разговоров лежат отдельно от прогона набора: метод открыт всем, и то, что
+        # через него спросили, не должно ни попасть в ответ стенду, ни вытеснить ответы прогона.
+        self.responses = ResponseCache(CACHE_SIZE, 2 * 1024 * 1024)
         self.in_work: dict[str, asyncio.Task] = {}  # вопросы, которые считаются или ждут очереди
         self.dev_dataset: Dataset | None = None  # набор разработки для клиента, пока стенд не вызвал /run
         self._index: tuple[list, Index] | None = None  # база статей и её индекс
@@ -205,6 +208,7 @@ async def _compute(
             answers = await pipeline.answer_dataset(
                 _live_dataset(dataset, body, user_id), llm, deadline_seconds=config.CHAT_DEADLINE_SECONDS,
                 quick=True, history_messages=config.CHAT_HISTORY_MESSAGES, index=state.index_for(dataset),
+                cache=state.responses,
             )
     finally:
         state.reserved -= config.CHAT_TOKEN_ESTIMATE
@@ -223,9 +227,7 @@ async def _compute(
         ],
     }
     if not any(voice["fallback"] for voice in voices.values()):  # запасной текст не запоминаем: повтор может удаться
-        state.cache[key] = triple
-        while len(state.cache) > CACHE_SIZE:
-            state.cache.popitem(last=False)
+        state.cache.put(key, triple)
     return triple
 
 

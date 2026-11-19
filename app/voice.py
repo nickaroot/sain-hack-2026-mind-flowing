@@ -9,9 +9,7 @@
 """
 
 import asyncio
-import hashlib
 import logging
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -20,6 +18,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app import config, llm
+from app.cache import BoundedCache, digest
 from app.state import moscow_day, run_active
 
 log = logging.getLogger("app.voice")
@@ -39,6 +38,7 @@ PARALLEL_REQUESTS = 2  # одновременно в памяти не боль�
 MAX_WAITING = 6
 SPEECH_CACHE_SIZE = 30  # mp3 ответа весит 100–200 КБ: повторное прослушивание не тратит бюджет
 SPEECH_CACHE_BYTES = 16 * 1024 * 1024  # а ответ в 2000 символов — около 2 МБ: число записей память не ограничивает
+HEARD_CACHE_SIZE = 50
 RUN_IN_PROGRESS = "Идёт обработка набора, попробуйте через пару минут"
 
 
@@ -106,37 +106,17 @@ class VoiceProxy:
         raise VoiceUnavailable(502, "Сервис голоса ответил ошибкой, повторите позже", retry_after=10)
 
 
-class SpeechCache:
-    """Озвученные ответы: последние записи в пределах числа и общего размера. Старые вытесняются первыми."""
-
-    def __init__(self, max_items: int = SPEECH_CACHE_SIZE, max_bytes: int = SPEECH_CACHE_BYTES):
-        self.max_items, self.max_bytes = max_items, max_bytes
-        self.size = 0
-        self._items: OrderedDict[str, bytes] = OrderedDict()
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def get(self, key: str) -> bytes | None:
-        return self._items.get(key)
-
-    def put(self, key: str, audio: bytes) -> None:
-        if len(audio) > self.max_bytes or key in self._items:
-            return  # запись больше всего кеша не хранится: она вытеснила бы всё остальное
-        self._items[key] = audio
-        self.size += len(audio)
-        while len(self._items) > self.max_items or self.size > self.max_bytes:
-            _, dropped = self._items.popitem(last=False)
-            self.size -= len(dropped)
-
-
 class VoiceState:
     """Очередь, суточные потолки и кеш озвученных ответов. Живёт в памяти процесса."""
 
     def __init__(self) -> None:
         self.gate = asyncio.Semaphore(PARALLEL_REQUESTS)
         self.waiting = 0
-        self.speech = SpeechCache()
+        self.speech: BoundedCache[bytes] = BoundedCache(
+            "озвученные ответы", SPEECH_CACHE_SIZE, SPEECH_CACHE_BYTES, size_of=len
+        )
+        # Та же запись, присланная снова (повтор после сбоя сети у клиента), второй раз не распознаётся.
+        self.heard: BoundedCache[str] = BoundedCache("распознанные записи", HEARD_CACHE_SIZE)
         self.in_work: dict[str, asyncio.Task] = {}  # ответы, которые озвучиваются сейчас или ждут очереди
         self.day = ""
         self.transcriptions = 0
@@ -210,8 +190,13 @@ async def transcribe(request: Request) -> dict:
         audio = await request.body()  # читается уже в очереди: в памяти не больше двух записей сразу
         if not audio:
             raise HTTPException(422, "Пустая запись")
-        state.take_transcription()
-        return await VoiceProxy().transcribe(audio, extension, content_type)
+        key = digest(content_type, audio)
+        text = state.heard.get(key)
+        if text is None:
+            state.take_transcription()
+            text = await VoiceProxy().transcribe(audio, extension, content_type)
+            state.heard.put(key, text)
+        return text
 
     return {"text": await _in_turn(request.app, state, work)}
 
@@ -238,7 +223,7 @@ async def speak(body: SpeakRequest, request: Request) -> Response:
     """Текст ответа → mp3 голосом выбранного эксперта."""
     state = state_of(request.app)
     voice = VOICES.get(body.expert_id or "", DEFAULT_VOICE)
-    key = hashlib.sha256(f"{voice}\n{body.text}".encode()).hexdigest()
+    key = digest(voice, body.text)
     audio = state.speech.get(key)
     if audio is None:
         task = state.in_work.get(key)  # этот же ответ уже озвучивается: ждём его, а не платим второй раз

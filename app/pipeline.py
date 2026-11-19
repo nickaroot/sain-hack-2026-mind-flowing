@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app import config, prompts
+from app.cache import ResponseCache
 from app.contracts import Answer, ArticleData, Citation, Dataset, Message, RequestData, RunResult
 from app.llm import LLM, JsonModel, LLMError
 from app.retrieval import Hit, Index
@@ -128,7 +129,8 @@ def _group_requests(requests: list[RequestData]) -> list[list[RequestData]]:
 
 
 async def _search_plans(
-    llm: JsonModel, groups: list[list[RequestData]], histories: list[list[str]], articles: list[ArticleData]
+    llm: JsonModel, groups: list[list[RequestData]], histories: list[list[str]], articles: list[ArticleData],
+    cache: ResponseCache | None = None,
 ) -> list[SearchPlan]:
     """Для каждой группы — английские поисковые слова и статьи, выбранные по списку названий.
 
@@ -144,17 +146,21 @@ async def _search_plans(
     )
 
     async def one_batch(batch: list[int]) -> None:
+        if not batch:  # при делении пачки с одной недостающей репликой вторая половина пуста: вызов не нужен
+            return
         items = []
         for i in batch:
             context = [h[len("user: "):] for h in histories[i] if h.startswith("user:")][-2:]
             items.append({"id": str(i), "context": context, "text": groups[i][0]["utterance"]["text"]})
-        try:
-            result = await llm.chat_json(
-                prompts.QUERY_SYSTEM, json.dumps({"catalog": catalog, "items": items}, ensure_ascii=False),
-                max_tokens=4000, effort="minimal",
-            )
-        except LLMError:
-            return  # вызов уже повторялся внутри LLM; дробить пачку при недоступной нейросети — только тратить время
+        user = json.dumps({"catalog": catalog, "items": items}, ensure_ascii=False)
+        cache_key = ResponseCache.key(config.LLM_MODEL, prompts.QUERY_SYSTEM, user, 4000, "minimal") if cache is not None else ""
+        result = cache.get(cache_key) if cache is not None else None
+        remembered = result is not None
+        if result is None:
+            try:
+                result = await llm.chat_json(prompts.QUERY_SYSTEM, user, max_tokens=4000, effort="minimal")
+            except LLMError:
+                return  # вызов уже повторялся внутри LLM; дробить пачку при недоступной нейросети — только тратить время
         for key, value in result.items():
             if not (key.isdigit() and int(key) < len(plans)):
                 continue
@@ -168,6 +174,9 @@ async def _search_plans(
                 value["terms"][:400], [a for a in chosen if isinstance(a, str) and a in known][:4]
             )
         missing = [i for i in batch if not plans[i].terms]
+        if cache is not None and not remembered and not missing and set(result) == {str(i) for i in batch}:
+            # Запоминается только полный план ровно на эту пачку: неполный при повторе стоит спросить заново.
+            cache.put(cache_key, result)
         if missing and len(batch) > 1 and llm.usage.total_tokens < config.RETRY_TOKEN_BUDGET:
             half = (len(missing) + 1) // 2
             await asyncio.gather(one_batch(missing[:half]), one_batch(missing[half:]))
@@ -193,12 +202,21 @@ def _sources(index: Index, hits: list[Hit], query: str) -> list[dict]:
     return sources
 
 
-async def _attempt(llm: JsonModel, system: str, triple: Triple) -> Draft | None:
-    """Один вызов на тройку. None — нейросеть не ответила или вернула не то."""
-    try:
-        result = await llm.chat_json(system, json.dumps(triple.payload, ensure_ascii=False), max_tokens=3500, effort="low")
-    except LLMError:
-        return None
+async def _attempt(llm: JsonModel, system: str, triple: Triple, cache: ResponseCache | None = None) -> Draft | None:
+    """Один вызов на тройку. None — нейросеть не ответила или вернула не то.
+
+    Ответ запоминается в cache, только если к нему нет ни одного замечания, то есть он и есть итог тройки.
+    Ответ не по форме, небезопасный или с замечаниями при повторе спрашивается заново.
+    """
+    user = json.dumps(triple.payload, ensure_ascii=False)
+    cache_key = ResponseCache.key(config.LLM_MODEL, system, user, 3500, "low") if cache is not None else ""
+    result = cache.get(cache_key) if cache is not None else None
+    remembered = result is not None
+    if result is None:
+        try:
+            result = await llm.chat_json(system, user, max_tokens=3500, effort="low")
+        except LLMError:
+            return None
     texts, source = result.get("texts"), result.get("source")
     if not isinstance(texts, dict) or not isinstance(source, int) or not 1 <= source <= len(triple.hits):
         return None
@@ -216,6 +234,8 @@ async def _attempt(llm: JsonModel, system: str, triple: Triple) -> Draft | None:
         problems += [f"{request['expert_id']}: {problem.message}" for problem in found]
         unsafe += not is_safe_text(text)
         serious += any(problem.substantive for problem in found)
+    if cache is not None and not remembered and not problems and not unsafe and type(source) is int:
+        cache.put(cache_key, result)
     return Draft(texts, source, refused, unsafe, problems, serious)
 
 
@@ -273,12 +293,14 @@ def _answers(triple: Triple, default_citation: Citation) -> list[Answer]:
     return answers
 
 
-async def _prepare(llm: JsonModel, dataset: Dataset, index: Index, history_messages: int) -> list[Triple]:
+async def _prepare(
+    llm: JsonModel, dataset: Dataset, index: Index, history_messages: int, cache: ResponseCache | None
+) -> list[Triple]:
     """План поиска одним-двумя вызовами на набор, затем поиск: для каждой тройки — разделы и вход нейросети."""
     groups = _group_requests(dataset["requests"])
     histories = _histories(dataset.get("chat_history", []), groups, history_messages)
     try:
-        plans = await _search_plans(llm, groups, histories, dataset["articles"])
+        plans = await _search_plans(llm, groups, histories, dataset["articles"], cache)
     except Exception:  # неожиданный ответ нейросети на этапе поиска не должен стоить всего прогона
         log.exception("план поиска не получен, тройки получат запасные ответы")
         plans = [SearchPlan() for _ in groups]
@@ -293,7 +315,7 @@ async def _prepare(llm: JsonModel, dataset: Dataset, index: Index, history_messa
 
 async def answer_dataset(
     dataset: Dataset, llm: JsonModel | None = None, deadline_seconds: float | None = None, quick: bool = False,
-    history_messages: int = HISTORY_MESSAGES, index: Index | None = None,
+    history_messages: int = HISTORY_MESSAGES, index: Index | None = None, cache: ResponseCache | None = None,
 ) -> RunResult:
     """Возвращает тело ответа /run: ровно один ответ на каждый запрос набора.
 
@@ -304,6 +326,8 @@ async def answer_dataset(
     отказе, указание в отказе, названная причина жалоб); замечания к длине и подаче второго вызова не стоят.
     history_messages — сколько последних реплик переписки видит нейросеть: в разговоре их больше, чем в наборе.
     index — готовый индекс этой же базы статей: разговор строит его один раз на набор, а не на каждый вопрос.
+    cache — память пригодных ответов нейросети (app/cache.py). Без неё каждый запрос уходит нейросети, как
+    раньше; с ней повторный прогон того же набора платит только за тройки, которым ответа не хватило.
     """
     llm = llm or LLM()
     llm.deadline = time.monotonic() + (deadline_seconds or config.RUN_DEADLINE_SECONDS)
@@ -313,14 +337,14 @@ async def answer_dataset(
         Citation(article_id=a["article_id"], section_id=a["sections"][0]["section_id"])
         for a in dataset["articles"] if a.get("sections")
     )
-    triples = await _prepare(llm, dataset, index, history_messages)
+    triples = await _prepare(llm, dataset, index, history_messages, cache)
     system = prompts.answer_system(dataset["experts"])
 
     async def attempt(number: int, triple: Triple) -> Draft | None:
         if not triple.hits:
             return None
         try:
-            return await _attempt(llm, system, triple)
+            return await _attempt(llm, system, triple, cache)
         except Exception:  # одна сломанная тройка не должна уронить весь прогон
             log.exception("тройка %d: попытка не удалась", number)
             return None

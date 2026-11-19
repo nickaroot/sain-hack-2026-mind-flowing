@@ -116,7 +116,7 @@ const response = await fetch(`${API_URL}/api/transcribe`, {
 const { text } = await response.json()                // дальше text уходит в POST /api/chat
 ```
 
-Принимаются `audio/webm`, `audio/ogg`, `audio/mpeg`, `audio/wav`, `audio/mp4` (m4a), `audio/flac`; запись — до 5 МБ, это больше десяти минут webm из браузера. Ответ: `{"text": "Мешает ли чашка кофе после обеда уснуть вечером?"}`.
+Принимаются `audio/webm`, `audio/ogg`, `audio/mpeg`, `audio/wav`, `audio/mp4` (m4a), `audio/flac`; запись — до 5 МБ, это больше десяти минут webm из браузера. Ответ: `{"text": "Мешает ли чашка кофе после обеда уснуть вечером?"}`. Ту же запись, присланную повторно (повтор после сбоя сети), сервер второй раз не распознаёт и отдаёт готовый текст.
 
 ### `POST /api/speak` — ответ эксперта → mp3
 

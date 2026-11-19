@@ -122,14 +122,19 @@ async def _answer(token: str, dataset_code: str | None) -> RunResult:
     app.state.dataset = dataset
     log.info("набор получен: запросов %d, статей %d", len(dataset["requests"]), len(dataset["articles"]))
     llm = pipeline.LLM()
+    remembered = app.state.responses.stats()["hits"]
     try:
-        result = await pipeline.answer_dataset(dataset, llm)
+        result = await pipeline.answer_dataset(
+            dataset, llm, cache=app.state.responses if config.RUN_RESPONSE_CACHE else None
+        )
     finally:
         chat.state_of(app).note_run(llm.usage.total_tokens)  # разговорам достаётся то, что осталось от прогона
     answers = result["requests"]
     log.info(
-        "прогон завершён за %.0f с: ответов %d, из них отказов %d и запасных %d; токенов %d",
+        "прогон завершён за %.0f с: ответов %d, из них отказов %d и запасных %d; токенов %d, "
+        "вызовов нейросети %d, взято из памяти ответов %d",
         time.monotonic() - started, len(answers), sum(a["refused"] for a in answers),
         sum(pipeline.is_fallback(a) for a in answers), llm.usage.total_tokens,
+        llm.usage.calls, app.state.responses.stats()["hits"] - remembered,
     )
     return result

@@ -8,8 +8,11 @@
     последний набор         app.state.dataset      один; заменяется следующим /run
     учёт токенов за сутки   chat.ChatState         счётчики; сброс в 00:00 по Москве
     ответы разговоров       chat.ChatState.cache   200 последних
+    ответы нейросети        app.state.responses    600 записей и 8 МБ; только ответы без замечаний
+                            chat.ChatState         свои 200 записей и 2 МБ: разговор не влияет на прогон
+    распознанные записи     voice.VoiceState       50 последних
     индекс базы статей      chat.ChatState         один на набор
-    озвученные ответы       voice.SpeechCache      30 записей и 16 МБ
+    озвученные ответы       voice.VoiceState       30 записей и 16 МБ
     темп обращений к прокси llm._next_start        одно число на процесс: общий для нейросети и голоса
 
 Проверка и изменение счётчиков стоят рядом, без await между ними: в одном цикле событий это и есть
@@ -21,6 +24,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
+
+from app import config
+from app.cache import ResponseCache
 
 MOSCOW = timezone(timedelta(hours=3))  # суточные лимиты прокси сбрасываются в 00:00 по Москве
 
@@ -39,6 +45,8 @@ def init(app: FastAPI) -> None:
     app.state.runs = {}
     # Прошёл ли в этом процессе прогон набора: после него разговорам в клиенте отдаётся больший запас токенов.
     app.state.run_finished = False
+    # Пригодные ответы нейросети для прогонов набора, см. app/cache.py. У разговоров память своя.
+    app.state.responses = ResponseCache(config.RESPONSE_CACHE_ITEMS, config.RESPONSE_CACHE_BYTES)
     app.state.chat = None
     app.state.voice = None
 

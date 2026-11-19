@@ -200,17 +200,10 @@ def test_same_answer_asked_twice_at_once_is_synthesized_once(client, proxy):
     assert asyncio.run(many([speak("Нет.")]))[0].status_code == 200  # сбой не запоминается: повтор удался
 
 
-def test_speech_cache_is_bounded_by_bytes_as_well_as_by_count():
-    cache = voice.SpeechCache(max_items=3, max_bytes=10)
-    cache.put("a", b"1234")
-    cache.put("b", b"5678")
-    cache.put("c", b"90ab")  # 12 байт на три записи: самая старая вытесняется
-    assert cache.get("a") is None and cache.get("b") == b"5678" and cache.size == 8 and len(cache) == 2
-    cache.put("d", b"x" * 11)  # запись больше всего кеша не хранится и ничего не вытесняет
-    assert cache.get("d") is None and len(cache) == 2
-    for key in "efg":
-        cache.put(key, b"1")
-    assert len(cache) == 3 and cache.size == sum(len(cache.get(k)) for k in "efg")
+def test_same_recording_sent_again_is_not_transcribed_twice(client, proxy):
+    assert record(client).json() == record(client).json() == {"text": "Мешает ли кофе вечером уснуть?"}
+    assert len(proxy.requests) == 1 and voice.state_of(app).transcriptions == 1
+    assert record(client, audio=WEBM + b"\x02").status_code == 200 and len(proxy.requests) == 2  # другая запись
 
 
 def test_voice_requests_take_their_turn_in_the_shared_queue(client, proxy, monkeypatch):
