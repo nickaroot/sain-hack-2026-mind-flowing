@@ -9,13 +9,26 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      skip_checks:
+        description: "Выкатить без проверок: только если сломаны сами проверки, а срок сдачи подходит"
+        type: boolean
+        default: false
 
 concurrency:
   group: hackathon-stand-deploy
   cancel-in-progress: false
 
 jobs:
+  # На стенд уходит только коммит, прошедший стиль, типы и тесты (tests.yml) на том же SHA.
+  checks:
+    if: ${{ !inputs.skip_checks }}
+    uses: ./.github/workflows/tests.yml
+
   deploy:
+    needs: checks
+    # Проверки не прошли — деплоя нет. Пропущены вручную (skip_checks) — деплой идёт под ответственность запустившего.
+    if: ${{ !cancelled() && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

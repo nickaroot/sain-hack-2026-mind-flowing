@@ -3,6 +3,9 @@
 Статьи приходят вместе с набором, поэтому индекс строится при каждом прогоне
 (609 разделов индексируются за доли секунды). Запросы приходят уже на
 английском: их готовит нейросеть одним вызовом на весь набор.
+
+Индекс обратный: для каждого слова хранится список разделов, где оно встречается. Запрос просматривает
+только разделы со своими словами, поэтому время поиска растёт с числом совпадений, а не с размером базы.
 """
 
 import math
@@ -10,6 +13,8 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+
+from app.contracts import ArticleData
 
 _WORD = re.compile(r"[a-z][a-z0-9-]+")
 _STOP = frozenset(
@@ -73,24 +78,37 @@ class Hit:
 
 
 class Index:
-    def __init__(self, articles: list[dict]):
+    def __init__(self, articles: Sequence[ArticleData]):
         self.sections: list[Section] = [
             Section(a["article_id"], s["section_id"], a["title"], s["title"], s["text"])
             for a in articles
             for s in a["sections"]
         ]
-        self._tf: list[Counter] = []
-        df: Counter = Counter()
-        for section in self.sections:
-            tokens = tokenize(section.text) + tokenize(section.title) * TITLE_WEIGHT + tokenize(section.article_title) * ARTICLE_TITLE_WEIGHT
-            tf = Counter(tokens)
-            self._tf.append(tf)
-            df.update(tf.keys())
+        # Слово → разделы, где оно есть, с числом вхождений; разделы идут по возрастанию номера.
+        self._postings: dict[str, list[tuple[int, int]]] = {}
+        lengths: list[int] = []
+        self._abstracts: dict[str, Section] = {}
+        first_sections: dict[str, Section] = {}
+        for number, section in enumerate(self.sections):
+            tokens = (
+                tokenize(section.text)
+                + tokenize(section.title) * TITLE_WEIGHT
+                + tokenize(section.article_title) * ARTICLE_TITLE_WEIGHT
+            )
+            for term, count in Counter(tokens).items():
+                self._postings.setdefault(term, []).append((number, count))
+            lengths.append(len(tokens))
+            first_sections.setdefault(section.article_id, section)
+            if "abstract" in section.title.lower():
+                self._abstracts.setdefault(section.article_id, section)
+        for article_id, section in first_sections.items():  # аннотации нет — её заменяет первый раздел
+            self._abstracts.setdefault(article_id, section)
         n = len(self.sections)
+        avg_len = (sum(lengths) / n) if n else 1.0
         self._weight = [section_weight(section.title) for section in self.sections]
-        self._len = [sum(tf.values()) for tf in self._tf]
-        self._avg_len = (sum(self._len) / n) if n else 1.0
-        self._idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
+        # Поправка BM25 на длину раздела не зависит от запроса: считается один раз.
+        self._norm = [K1 * (1 - B + B * length / avg_len) for length in lengths]
+        self._idf = {t: math.log(1 + (n - len(found) + 0.5) / (len(found) + 0.5)) for t, found in self._postings.items()}
 
     def _fuse(self, ranked: list[list[Hit]], by_article: dict[str, list[Hit]], prefer: Sequence[str]) -> list[list[Hit]]:
         """Объединение двух порядков статей по обратным рангам (reciprocal rank fusion)."""
@@ -111,8 +129,7 @@ class Index:
 
     def abstract_of(self, article_id: str) -> Section | None:
         """Аннотация статьи, а если её нет — первый раздел."""
-        own = [s for s in self.sections if s.article_id == article_id]
-        return next((s for s in own if "abstract" in s.title.lower()), own[0] if own else None)
+        return self._abstracts.get(article_id)
 
     def focus(self, text: str, query: str, max_chars: int) -> str:
         """Вырезка из раздела: предложения, которые сильнее всего совпадают с запросом, в исходном порядке."""
@@ -120,13 +137,17 @@ class Index:
             return text
         terms = set(tokenize(query))
         sentences = _SENTENCE.split(text)
-        ranked = sorted(
-            range(len(sentences)),
+
+        def closeness(sentence: str) -> float:
+            # Слова складываются по алфавиту: порядок обхода множества у каждого процесса свой, а сумма дробных
+            # чисел от порядка зависит. Без этого одна и та же вырезка менялась бы от перезапуска к перезапуску.
+            matched = sum(self._idf.get(term, 0.0) for term in sorted(set(tokenize(sentence)) & terms))
             # Предложение с числом — обычно измеренный результат, его и просят в ответе: небольшой перевес.
-            key=lambda i: -sum(self._idf.get(t, 0.0) for t in set(tokenize(sentences[i])) & terms)
-            * (1.25 if _DIGIT.search(sentences[i]) else 1.0),
-        )
-        chosen, used = set(), 0
+            return matched * (1.25 if _DIGIT.search(sentence) else 1.0)
+
+        ranked = sorted(range(len(sentences)), key=lambda i: -closeness(sentences[i]))
+        chosen: set[int] = set()
+        used = 0
         for i in ranked:
             if used + len(sentences[i]) > max_chars and chosen:
                 continue
@@ -142,17 +163,16 @@ class Index:
         prefer — статьи, которые нейросеть выбрала по списку названий, от лучшей к худшей. Их порядок
         объединяется с порядком поиска по словам: название статьи понимает смысл вопроса, а слова находят раздел.
         """
-        terms = Counter(tokenize(query))
-        scored: list[Hit] = []
-        for i, tf in enumerate(self._tf):
-            score = 0.0
-            norm = K1 * (1 - B + B * self._len[i] / self._avg_len)
-            for term in terms:
-                f = tf.get(term)
-                if f:
-                    score += self._idf[term] * f * (K1 + 1) / (f + norm)
-            if score > 0:
-                scored.append(Hit(self.sections[i], score * self._weight[i]))
+        scores: dict[int, float] = {}
+        for term in dict.fromkeys(tokenize(query)):  # повтор слова в запросе веса не добавляет
+            idf = self._idf.get(term)
+            if idf is None:
+                continue
+            for number, count in self._postings[term]:
+                scores[number] = scores.get(number, 0.0) + idf * count * (K1 + 1) / (count + self._norm[number])
+        # Разделы перебираются по номеру, а сортировка устойчива: при равной оценке раньше идёт раздел,
+        # который раньше стоит в базе. От этого порядка зависит, какие разделы увидит нейросеть.
+        scored = [Hit(self.sections[n], scores[n] * self._weight[n]) for n in sorted(scores) if scores[n] > 0]
         scored.sort(key=lambda h: -h.score)
         # Сначала ранжируем статьи по сумме их лучших разделов, затем берём разделы по очереди из лучших статей:
         # один случайно совпавший абзац общего обзора не должен обгонять профильную статью.

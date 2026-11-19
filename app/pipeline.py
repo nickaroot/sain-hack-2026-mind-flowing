@@ -1,7 +1,7 @@
 """Сборка ответов на набор кейса 4.
 
 Порядок работы:
-1. Один вызов нейросети на все реплики набора: английские поисковые слова и статьи, выбранные по списку названий.
+1. Один вызов нейросети на пачку до 20 реплик: английские поисковые слова и статьи, выбранные по списку названий.
 2. BM25 находит разделы статей для каждой тройки запросов; порядок статей объединяется с выбором нейросети.
 3. Один вызов на тройку: проверка на недопустимую просьбу, выбор источника и три текста экспертов.
    Общая ссылка у тройки получается сама собой, а запросы разных пользователей не смешиваются.
@@ -16,9 +16,10 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app import config, prompts
+from app.contracts import Answer, ArticleData, Citation, Dataset, Message, RequestData, RunResult
 from app.llm import LLM, JsonModel, LLMError
 from app.retrieval import Hit, Index
 from app.text_checks import is_safe_text, text_problems, tidy
@@ -78,17 +79,17 @@ class Draft:
 class Triple:
     """Одна реплика и всё, что по ней собрано: запросы экспертов, найденные разделы, вход нейросети, попытка."""
 
-    requests: list[dict]
+    requests: list[RequestData]
     hits: list[Hit]
     payload: dict
     draft: Draft | None = None
 
 
-def is_fallback(answer: dict) -> bool:
+def is_fallback(answer: Answer) -> bool:
     return answer["text"] in FALLBACK_TEXTS.values()
 
 
-def _citation(hit: Hit) -> dict:
+def _citation(hit: Hit) -> Citation:
     return {"article_id": hit.section.article_id, "section_id": hit.section.section_id}
 
 
@@ -97,35 +98,37 @@ def _moment(value: object) -> datetime:
     try:
         moment = datetime.fromisoformat(str(value))
     except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=UTC)
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
-def _history_for(request: dict, by_user: dict[str, list[dict]], messages: int = HISTORY_MESSAGES) -> list[str]:
+def _history_for(
+    request: RequestData, by_user: dict[str, list[Message]], messages: int = HISTORY_MESSAGES
+) -> list[str]:
     # Время сравниваем как моменты, а не как строки: у сообщений бывают разные часовые пояса.
     asked_at = _moment(request["utterance"].get("at"))
     earlier = [m for m in by_user.get(request["user_id"], []) if _moment(m.get("at")) < asked_at]
     return [f"{m['role']}: {m['text'][:HISTORY_CHARS]}" for m in earlier[-messages:]]
 
 
-def _histories(chat_history: list[dict], groups: list[list[dict]], messages: int) -> list[list[str]]:
+def _histories(chat_history: list[Message], groups: list[list[RequestData]], messages: int) -> list[list[str]]:
     """Для каждой тройки — последние реплики переписки того же пользователя до её вопроса."""
-    by_user: dict[str, list[dict]] = defaultdict(list)
+    by_user: dict[str, list[Message]] = defaultdict(list)
     for message in sorted(chat_history, key=lambda m: _moment(m.get("at"))):
         by_user[message["user_id"]].append(message)
     return [_history_for(group[0], by_user, messages) for group in groups]
 
 
-def _group_requests(requests: list[dict]) -> list[list[dict]]:
+def _group_requests(requests: list[RequestData]) -> list[list[RequestData]]:
     """Тройки по group_id; запрос без группы обрабатывается отдельно."""
-    groups: dict[str, list[dict]] = defaultdict(list)
+    groups: dict[str, list[RequestData]] = defaultdict(list)
     for request in requests:
         groups[request.get("group_id") or f"single:{request['record_id']}"].append(request)
     return list(groups.values())
 
 
 async def _search_plans(
-    llm: JsonModel, groups: list[list[dict]], histories: list[list[str]], articles: list[dict]
+    llm: JsonModel, groups: list[list[RequestData]], histories: list[list[str]], articles: list[ArticleData]
 ) -> list[SearchPlan]:
     """Для каждой группы — английские поисковые слова и статьи, выбранные по списку названий.
 
@@ -159,7 +162,8 @@ async def _search_plans(
                 value = {"terms": value}
             if not isinstance(value, dict) or not isinstance(value.get("terms"), str):
                 continue
-            chosen = value.get("articles") if isinstance(value.get("articles"), list) else []
+            named = value.get("articles")
+            chosen = named if isinstance(named, list) else []
             plans[int(key)] = SearchPlan(
                 value["terms"][:400], [a for a in chosen if isinstance(a, str) and a in known][:4]
             )
@@ -239,7 +243,7 @@ def _rewrite_priority(draft: Draft | None) -> tuple[int, int, int]:
     return 1, -unsafe, -problems
 
 
-def _fallback(requests: list[dict], citation: dict) -> list[dict]:
+def _fallback(requests: list[RequestData], citation: Citation) -> list[Answer]:
     return [
         {
             "record_id": r["record_id"],
@@ -251,13 +255,13 @@ def _fallback(requests: list[dict], citation: dict) -> list[dict]:
     ]
 
 
-def _answers(triple: Triple, default_citation: dict) -> list[dict]:
+def _answers(triple: Triple, default_citation: Citation) -> list[Answer]:
     """Ответы тройки в формате /run. Нет попытки или текст небезопасен — запасной отказ."""
     draft = triple.draft
     if draft is None:
         return _fallback(triple.requests, _citation(triple.hits[0]) if triple.hits else default_citation)
     citation = _citation(triple.hits[draft.source - 1])  # ссылка у тройки одна, в том числе у запасного текста
-    answers = []
+    answers: list[Answer] = []
     for request in triple.requests:
         text = draft.texts.get(request["expert_id"])
         if isinstance(text, str) and is_safe_text(text):
@@ -269,9 +273,7 @@ def _answers(triple: Triple, default_citation: dict) -> list[dict]:
     return answers
 
 
-async def _prepare(
-    llm: JsonModel, dataset: dict, index: Index, history_messages: int
-) -> list[Triple]:
+async def _prepare(llm: JsonModel, dataset: Dataset, index: Index, history_messages: int) -> list[Triple]:
     """План поиска одним-двумя вызовами на набор, затем поиск: для каждой тройки — разделы и вход нейросети."""
     groups = _group_requests(dataset["requests"])
     histories = _histories(dataset.get("chat_history", []), groups, history_messages)
@@ -281,7 +283,7 @@ async def _prepare(
         log.exception("план поиска не получен, тройки получат запасные ответы")
         plans = [SearchPlan() for _ in groups]
     triples = []
-    for group, history, plan in zip(groups, histories, plans):
+    for group, history, plan in zip(groups, histories, plans, strict=True):
         hits = index.search(plan.terms, k=CANDIDATES, prefer=plan.articles) if plan.terms else []
         payload = {"history": history, "utterance": group[0]["utterance"]["text"],
                    "sources": _sources(index, hits, plan.terms)}
@@ -290,9 +292,9 @@ async def _prepare(
 
 
 async def answer_dataset(
-    dataset: dict, llm: JsonModel | None = None, deadline_seconds: float | None = None, quick: bool = False,
-    history_messages: int = HISTORY_MESSAGES,
-) -> dict:
+    dataset: Dataset, llm: JsonModel | None = None, deadline_seconds: float | None = None, quick: bool = False,
+    history_messages: int = HISTORY_MESSAGES, index: Index | None = None,
+) -> RunResult:
     """Возвращает тело ответа /run: ровно один ответ на каждый запрос набора.
 
     Разговор в клиенте идёт через эту же функцию с набором из одной тройки и коротким сроком: так живой
@@ -301,13 +303,14 @@ async def answer_dataset(
     ответа нет или к тексту есть замечание по существу (небезопасное, текст противоречит решению об
     отказе, указание в отказе, названная причина жалоб); замечания к длине и подаче второго вызова не стоят.
     history_messages — сколько последних реплик переписки видит нейросеть: в разговоре их больше, чем в наборе.
+    index — готовый индекс этой же базы статей: разговор строит его один раз на набор, а не на каждый вопрос.
     """
     llm = llm or LLM()
     llm.deadline = time.monotonic() + (deadline_seconds or config.RUN_DEADLINE_SECONDS)
-    index = Index(dataset["articles"])
+    index = index or Index(dataset["articles"])
     # Ссылка на случай, когда поиск ничего не дал: первый существующий раздел базы.
     default_citation = next(
-        {"article_id": a["article_id"], "section_id": a["sections"][0]["section_id"]}
+        Citation(article_id=a["article_id"], section_id=a["sections"][0]["section_id"])
         for a in dataset["articles"] if a.get("sections")
     )
     triples = await _prepare(llm, dataset, index, history_messages)
@@ -325,7 +328,8 @@ async def answer_dataset(
     # Этап 1: первая попытка для каждой тройки. Этап 2: повторы — только после того, как первый ответ
     # есть у всех, по одному и пока хватает токенов и времени. Так при нехватке суточного лимита
     # страдает качество отдельных троек, а не наличие ответов.
-    for triple, draft in zip(triples, await asyncio.gather(*(attempt(n, t) for n, t in enumerate(triples)))):
+    first_attempts = await asyncio.gather(*(attempt(n, t) for n, t in enumerate(triples)))
+    for triple, draft in zip(triples, first_attempts, strict=True):
         triple.draft = draft
     to_rewrite = sorted(
         (n for n, t in enumerate(triples) if t.hits and _needs_rewrite(t.draft, quick)),

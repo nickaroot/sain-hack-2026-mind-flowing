@@ -1,21 +1,26 @@
-# Тесты на каждый push и pull request. Сети и ключей им не нужно: нейросеть и сервис хакатона подменяются.
-# Деплой на стенд (deploy.yml) от этого прогона не зависит: перед сроком сдачи он не должен ждать очереди.
-name: Тесты
+# Проверки кода: стиль (ruff), типы (mypy) и тесты с покрытием не ниже 90%. Сети и ключей им не нужно:
+# нейросеть, голос и сервис хакатона подменяются. Запускаются на каждый pull request и push в ветку,
+# а для main — из deploy.yml: коммит уходит на стенд только после того, как прошёл эти проверки.
+name: Проверки
 
 on:
-  push:
   pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call:
 
 jobs:
-  tests:
+  checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11" # как на стенде
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
-      - run: pytest -q
+      - run: ruff check app scripts tests
+      - run: mypy
+      - run: pytest -q --cov

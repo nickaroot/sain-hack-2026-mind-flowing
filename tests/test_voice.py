@@ -1,16 +1,19 @@
 """Голос для клиента: запись вопроса превращается в текст, ответ эксперта — в mp3; ключ прокси остаётся на сервере."""
 
+import asyncio
 import json
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, llm as llm_module, voice
+from app import config, voice
+from app import llm as llm_module
 from app.main import app
 
 MP3 = b"ID3" + b"\x00" * 64
 WEBM = b"\x1aE\xdf\xa3" + b"\x01" * 200
+REAL_CLIENT = httpx.AsyncClient  # подмена прокси заменяет httpx.AsyncClient; запросы к самому приложению идут настоящим
 
 
 @pytest.fixture
@@ -38,8 +41,7 @@ def proxy(monkeypatch):
             return httpx.Response(200, content=MP3, headers={"content-type": "audio/mpeg"})
         return httpx.Response(200, json={"text": " Мешает ли кофе вечером уснуть? "})
 
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(voice.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(respond)))
+    monkeypatch.setattr(voice.httpx, "AsyncClient", lambda **kw: REAL_CLIENT(transport=httpx.MockTransport(respond)))
     monkeypatch.setattr(llm_module, "MIN_SECONDS_BETWEEN_CALLS", 0)
     monkeypatch.setattr(config, "LLM_BASE_URL", "http://proxy.test/v1")
     monkeypatch.setattr(config, "LLM_API_KEY", "test-key")
@@ -139,6 +141,76 @@ def test_voice_has_its_own_daily_ceiling(client, proxy, monkeypatch):
     assert record(client).status_code == 200 and record(client).status_code == 429
     assert client.post("/api/speak", json={"text": "Короткий."}).status_code == 200
     assert client.post("/api/speak", json={"text": "Ещё один ответ."}).status_code == 429
+
+
+async def many(calls):
+    """Несколько запросов к приложению одновременно, в одном цикле событий."""
+    async with REAL_CLIENT(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        return await asyncio.gather(*(call(http) for call in calls))
+
+
+def speak(text, expert_id="clinician"):
+    return lambda http: http.post("/api/speak", json={"text": text, "expert_id": expert_id})
+
+
+def test_daily_ceiling_holds_when_requests_wait_in_the_queue_together(client, proxy, monkeypatch):
+    monkeypatch.setattr(config, "VOICE_DAILY_SPEECH_CHARS", 4)
+    statuses = sorted(r.status_code for r in asyncio.run(many([speak("abcd"), speak("efgh"), speak("ijkl")])))
+    assert statuses == [200, 429, 429] and len(proxy.requests) == 1  # потолок проверяется и списывается под очередью
+    monkeypatch.setattr(config, "VOICE_DAILY_TRANSCRIPTIONS", 1)
+    app.state.voice = None  # очередь привязана к циклу событий, в котором её ждали: у второго цикла своя
+
+    def recording(http):
+        return http.post("/api/transcribe", content=WEBM, headers={"Content-Type": "audio/webm"})
+
+    statuses = sorted(r.status_code for r in asyncio.run(many([recording] * 3)))
+    assert statuses == [200, 429, 429] and len(proxy.requests) == 2
+
+
+def test_requests_waiting_in_the_voice_queue_yield_to_a_run_that_started(client, proxy, monkeypatch):
+    class Unfinished:
+        def done(self):
+            return False
+
+    turns = []
+
+    async def slow_turn():
+        turns.append(1)
+        if len(turns) == 1:  # пока первый запрос ждёт своей очереди к прокси, стенд вызывает /run
+            await asyncio.sleep(0.05)
+            app.state.runs[("code", "token")] = Unfinished()
+
+    monkeypatch.setattr(voice.llm, "wait_turn", slow_turn)
+    monkeypatch.setattr(voice, "PARALLEL_REQUESTS", 1)
+    app.state.voice = None
+    statuses = [r.status_code for r in asyncio.run(many([speak("один"), speak("два"), speak("три")]))]
+    app.state.runs.clear()
+    assert statuses == [200, 503, 503] and len(proxy.requests) == 1  # ушедший запрос не отзывается, ждавшие — уступают
+
+
+def test_same_answer_asked_twice_at_once_is_synthesized_once(client, proxy):
+    same = asyncio.run(many([speak("Да, мешает."), speak("Да, мешает."), speak("Да, мешает.", "biohacker")]))
+    assert [r.status_code for r in same] == [200, 200, 200]
+    assert len(proxy.requests) == 2  # один голос — один вызов, другой голос — отдельный
+    assert voice.state_of(app).in_work == {} and voice.state_of(app).speech_chars == 2 * len("Да, мешает.")
+    proxy.reply = (500, {"error": "oops"})
+    failed = asyncio.run(many([speak("Нет."), speak("Нет.")]))
+    assert [r.status_code for r in failed] == [502, 502] and len(proxy.requests) == 3
+    proxy.reply = None
+    assert asyncio.run(many([speak("Нет.")]))[0].status_code == 200  # сбой не запоминается: повтор удался
+
+
+def test_speech_cache_is_bounded_by_bytes_as_well_as_by_count():
+    cache = voice.SpeechCache(max_items=3, max_bytes=10)
+    cache.put("a", b"1234")
+    cache.put("b", b"5678")
+    cache.put("c", b"90ab")  # 12 байт на три записи: самая старая вытесняется
+    assert cache.get("a") is None and cache.get("b") == b"5678" and cache.size == 8 and len(cache) == 2
+    cache.put("d", b"x" * 11)  # запись больше всего кеша не хранится и ничего не вытесняет
+    assert cache.get("d") is None and len(cache) == 2
+    for key in "efg":
+        cache.put(key, b"1")
+    assert len(cache) == 3 and cache.size == sum(len(cache.get(k)) for k in "efg")
 
 
 def test_voice_requests_take_their_turn_in_the_shared_queue(client, proxy, monkeypatch):

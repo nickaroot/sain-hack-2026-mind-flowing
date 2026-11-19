@@ -278,7 +278,8 @@ def create_app(args: argparse.Namespace) -> FastAPI:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--dataset", action="append", required=True, help="код=путь к файлу ответа getData; первый — набор прогона")
+    parser.add_argument("--dataset", action="append", required=True,
+                        help="код=путь к файлу ответа getData; первый — набор прогона")
     parser.add_argument("--cache", default="emulator", help="имя локального кеша ответов модели")
     parser.add_argument("--port", type=int, default=8900)
     parser.add_argument("--model", default=MODEL, help="имя модели, которое принимает прокси")
@@ -288,7 +289,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reject", default="", help="параметры запроса, на которые прокси отвечает 400 (смена модели)")
     parser.add_argument("--fault-rate", type=float, default=0.0, help="доля вызовов, которые получают сбой")
     parser.add_argument("--parallel", type=int, default=4)
-    parser.add_argument("--voice-budget", type=float, default=3.0, help="суточный бюджет голоса в долларах, на распознавание и на синтез")
+    parser.add_argument("--voice-budget", type=float, default=3.0,
+                        help="суточный бюджет голоса в долларах, на распознавание и на синтез")
     parser.add_argument("--voice-spent", type=float, default=0.0, help="сколько бюджета голоса уже потрачено")
     parser.add_argument("--voice-text", default="Мешает ли чашка кофе после обеда уснуть вечером?",
                         help="что возвращает распознавание настоящей записи")

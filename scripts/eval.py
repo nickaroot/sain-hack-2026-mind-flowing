@@ -57,7 +57,8 @@ async def main() -> None:
     parser.add_argument("--only", choices=("attack", "normal"), default="",
                         help="взять только атаки или только обычные вопросы: дешёвая проверка одной стороны правки")
     parser.add_argument("--out", default="data/answers.json")
-    parser.add_argument("--offline", default="", help="имя локального кеша: модель вызывается через Codex CLI, а не через прокси организаторов")
+    parser.add_argument("--offline", default="",
+                        help="имя локального кеша: модель вызывается через Codex CLI, а не через прокси организаторов")
     args = parser.parse_args()
 
     with open(args.path, encoding="utf-8") as f:

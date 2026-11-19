@@ -29,7 +29,7 @@ async def main() -> None:
     histories = [pipeline._history_for(g[0], by_user) for g in groups]
     plans = await pipeline._search_plans(CodexLLM(sys.argv[3]), groups, histories, dataset["articles"])
     index = Index(dataset["articles"])
-    for group, plan in zip(groups, plans):
+    for group, plan in zip(groups, plans, strict=True):
         query = plan.terms
         first = group[0]["record_id"]
         expected, answer = ref[first], answers[first]

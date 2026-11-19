@@ -98,7 +98,10 @@ def chunk(blocks: list[tuple[str, list[str]]]) -> list[dict]:
         for paragraph in paragraphs:
             while len(paragraph) > CHUNK_CHARS:  # очень длинный абзац режем по предложению
                 cut = paragraph.rfind(". ", 0, CHUNK_CHARS) + 1 or CHUNK_CHARS
-                pieces.append((current + " " + paragraph[:cut]).strip()) if not current else pieces.extend([current, paragraph[:cut]])
+                if current:
+                    pieces.extend([current, paragraph[:cut]])
+                else:
+                    pieces.append(paragraph[:cut].strip())
                 current, paragraph = "", paragraph[cut:].strip()
             if current and len(current) + len(paragraph) + 1 > CHUNK_CHARS:
                 pieces.append(current)

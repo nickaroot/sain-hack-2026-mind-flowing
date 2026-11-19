@@ -31,7 +31,7 @@ async def main() -> None:
 
     index = Index(dataset["articles"])
     totals = defaultdict(int)
-    for group, plan in zip(groups, plans):
+    for group, plan in zip(groups, plans, strict=True):
         ok = allowed[group[0]["record_id"]]
         for name, prefer in (("только слова", ()), ("слова и названия", plan.articles)):
             articles = [h.section.article_id for h in index.search(plan.terms, k=pipeline.CANDIDATES, prefer=prefer)]

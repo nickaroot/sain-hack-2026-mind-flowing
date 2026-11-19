@@ -239,8 +239,8 @@ def main() -> None:
         print(f"память: пик {peak['mib']:.0f} МиБ из 512; OOMKilled: {state['OOMKilled']}; работает: {state['Running']}")
         if state["OOMKilled"] or not state["Running"]:
             problems.append("контейнер упал")
-        leaks = [word for word in (RUN_TOKEN, TEAM_TOKEN, LLM_KEY, code)
-                 if word in sh("docker", "logs", CONTAINER, check=False).stdout + sh("docker", "logs", CONTAINER, check=False).stderr]
+        logs = sh("docker", "logs", CONTAINER, check=False)
+        leaks = [word for word in (RUN_TOKEN, TEAM_TOKEN, LLM_KEY, code) if word in logs.stdout + logs.stderr]
         if leaks:
             problems.append(f"в логах решения есть то, чего там быть не должно: {leaks}")
     finally:

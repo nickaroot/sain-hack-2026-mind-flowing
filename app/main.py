@@ -3,18 +3,18 @@
 import asyncio
 import hashlib
 import logging
+import time
 
 from fastapi import FastAPI, Header, HTTPException
-from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
-from app import chat, config, hack_api, pipeline, voice
+from app import chat, config, hack_api, logs, pipeline, state, voice
+from app.contracts import RunResult
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logs.setup()
 log = logging.getLogger("app")
-# httpx на уровне INFO пишет URL запроса, а в нём код набора: в логи он попадать не должен.
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(title="Mind-flowing · Кейс 4", docs_url=None, redoc_url=None)
 
@@ -55,16 +55,7 @@ app.add_middleware(
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 app.include_router(chat.router)
 app.include_router(voice.router)
-
-# Последний полученный набор: после /run финального показа клиент работает с ним.
-app.state.dataset = None
-# Прогоны по коду набора. Повторный /run с тем же кодом (например, после обрыва связи у вызывающей стороны)
-# получает тот же результат и не тратит суточный лимит токенов второй раз.
-app.state.runs = {}
-# Прошёл ли в этом процессе прогон набора: после него разговорам в клиенте отдаётся больший запас токенов.
-app.state.run_finished = False
-app.state.chat = None
-app.state.voice = None
+state.init(app)
 
 
 MAX_KEPT_FALLBACK_SHARE = 0.1
@@ -83,6 +74,8 @@ async def health() -> dict:
 
 @app.post("/run")
 async def run(body: RunRequest, authorization: str = Header(default="")) -> dict:
+    # Тип ответа намеренно dict, а не RunResult: по точному типу FastAPI построил бы модель ответа и стал бы
+    # пересобирать тело. Ответ стенду уходит ровно таким, каким его собрал конвейер.
     if body.case != config.CASE_ID:
         raise HTTPException(400, f"Решение рассчитано на кейс {config.CASE_ID}")
     scheme, _, token = authorization.partition(" ")
@@ -96,6 +89,8 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
     if task is None:
         chat.close_for_run(app)  # прогон важнее: разговоры, которые уже считаются или ждут очереди, прерываются
         task = runs[key] = asyncio.create_task(_answer(token, body.dataset_code))
+    else:
+        log.info("повторный /run: набор уже %s, второй раз не считается", "посчитан" if task.done() else "считается")
 
     def forget() -> None:
         if runs.get(key) is task:  # не трогаем прогон, который уже начал следующий запрос
@@ -120,12 +115,21 @@ async def run(body: RunRequest, authorization: str = Header(default="")) -> dict
     return answers
 
 
-async def _answer(token: str, dataset_code: str | None) -> dict:
+async def _answer(token: str, dataset_code: str | None) -> RunResult:
+    started = time.monotonic()
+    logs.start_run()  # метка прогона попадает во все строки логов этой задачи и её подзадач
     dataset = await hack_api.fetch_dataset(token, dataset_code)
     app.state.dataset = dataset
-    log.info("набор получен: запросов %d", len(dataset["requests"]))
+    log.info("набор получен: запросов %d, статей %d", len(dataset["requests"]), len(dataset["articles"]))
     llm = pipeline.LLM()
     try:
-        return await pipeline.answer_dataset(dataset, llm)
+        result = await pipeline.answer_dataset(dataset, llm)
     finally:
         chat.state_of(app).note_run(llm.usage.total_tokens)  # разговорам достаётся то, что осталось от прогона
+    answers = result["requests"]
+    log.info(
+        "прогон завершён за %.0f с: ответов %d, из них отказов %d и запасных %d; токенов %d",
+        time.monotonic() - started, len(answers), sum(a["refused"] for a in answers),
+        sum(pipeline.is_fallback(a) for a in answers), llm.usage.total_tokens,
+    )
+    return result

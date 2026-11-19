@@ -6,7 +6,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import chat, config, hack_api, llm as llm_module, pipeline
+from app import chat, config, hack_api, pipeline
+from app import llm as llm_module
 from app.main import app
 from tests.fakes import BODY, DATASET, EXPERTS, REFUSAL, FakeLLM, good_answer
 
@@ -66,6 +67,19 @@ def test_experts_are_listed_with_names_from_dataset(client):
     assert body["user_id"] == "u1"
     assert body["experts"] == [{"expert_id": "clinician", "name": "Сомнолог-клиницист",
                                 "description": "Думает как врач.", "speech_style": "Спокойно."}]
+
+
+def test_article_index_is_built_once_per_dataset_not_per_question(client, monkeypatch):
+    built = []
+    real_index = chat.Index
+    monkeypatch.setattr(chat, "Index", lambda articles: built.append(1) or real_index(articles))
+    llm = FakeLLM(good_answer())
+    assert ask(client, monkeypatch, llm).status_code == 200
+    assert ask(client, monkeypatch, llm, text="А чай вечером мешает уснуть?").status_code == 200
+    assert len(built) == 1 and len(llm.payloads) == 2
+    app.state.dataset = {**LIVE, "articles": list(LIVE["articles"])}  # пришёл другой набор — индекс строится заново
+    assert ask(client, monkeypatch, llm, text="А какао?").status_code == 200
+    assert len(built) == 2
 
 
 def test_chat_returns_chosen_expert_and_all_three_voices(client, monkeypatch):

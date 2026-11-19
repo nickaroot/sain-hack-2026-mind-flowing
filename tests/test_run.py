@@ -10,7 +10,8 @@ import jsonschema
 import pytest
 from fastapi.testclient import TestClient
 
-from app import hack_api, llm as llm_module, pipeline, text_checks
+from app import hack_api, pipeline, text_checks
+from app import llm as llm_module
 from app.llm import LLMError
 from app.main import app
 from app.retrieval import Index
@@ -117,6 +118,67 @@ def test_requests_to_the_model_stay_byte_for_byte_the_same(client, monkeypatch):
     assert [json.loads(user).keys() >= {"note"} for _, user in llm.requests] == [False, False, True]
     sent = "\x1e".join(f"{system}\x1f{user}" for system, user in llm.requests)
     assert hashlib.sha256(sent.encode()).hexdigest() == "0681422589557edb9cf91cd1e3442612025e71386c65de98e7b3f868ffc845e7"
+
+
+def test_run_body_stays_byte_for_byte_the_same(client, monkeypatch):
+    """Парная проверка к отпечатку запросов: при тех же ответах нейросети стенд получает то же тело до байта.
+
+    Файл записан версией, которая прошла замеры на двух наборах. Порядок полей, пробелы и чистка текста —
+    часть ответа: изменение здесь меняет то, что читает судья.
+    """
+    dose = good_answer(texts={e: f"{BODY} Хватит 100 мг кофеина. Подпись {e}." for e in EXPERTS})
+    llm = FakeLLM(dose, good_answer(texts={e: f"  {BODY}\n\nПодпись {e}.  " for e in EXPERTS}))
+    monkeypatch.setattr(pipeline, "LLM", lambda: llm)
+    response = client.post("/run", json={"case": 4, "dataset_code": "x"}, headers={"Authorization": "Bearer t"})
+    assert response.content == (Path(__file__).parent / "fixtures/run_body.json").read_bytes()
+    # Параметры вызовов — тоже часть запроса: длина ответа и глубина рассуждения подобраны замерами.
+    assert llm.options == [{"max_tokens": 4000, "effort": "minimal"}] + [{"max_tokens": 3500, "effort": "low"}] * 2
+
+
+def test_proxy_receives_instruction_and_data_as_separate_messages(monkeypatch):
+    seen = _proxy(monkeypatch, lambda body: (200, _completion('{"ok": true}')))
+    monkeypatch.setattr(llm_module.config, "LLM_MODEL", "model-x")
+    asyncio.run(llm_module.LLM().chat_json("инструкция", "данные", max_tokens=100, effort="minimal"))
+    assert seen == [{
+        "model": "model-x",
+        "messages": [{"role": "system", "content": "инструкция"}, {"role": "user", "content": "данные"}],
+        "max_completion_tokens": 100, "reasoning_effort": "minimal", "response_format": {"type": "json_object"},
+    }]
+
+
+def test_failed_dataset_fetch_is_a_502_and_the_next_run_starts_over(client, monkeypatch):
+    calls = []
+
+    async def failing_fetch(token, dataset_code):
+        calls.append(dataset_code)
+        raise hack_api.HackApiError(503, "busy")
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", failing_fetch)
+    for _ in range(2):
+        response = client.post("/run", json={"case": 4, "dataset_code": "c"}, headers={"Authorization": "Bearer t"})
+        assert response.status_code == 502 and "набор" in response.json()["detail"]
+    assert calls == ["c", "c"] and not app.state.runs  # сбой не запоминается
+
+
+def test_every_log_line_of_a_run_carries_its_mark(client, monkeypatch, caplog):
+    from app import logs
+
+    caplog.set_level("INFO")
+    caplog.handler.addFilter(logs._RunMark())
+    run(client, monkeypatch, FakeLLM(good_answer()))
+    run(client, monkeypatch, FakeLLM(good_answer()))  # повтор присоединяется к готовому прогону
+    marks = {r.run for r in caplog.records if r.name.startswith("app") and "повторный" not in r.getMessage()}
+    assert len(marks) == 1 and marks != {"-"}
+    text = caplog.text
+    assert "прогон завершён" in text and "повторный /run" in text
+    assert "run-token" not in text and "case4-test" not in text  # ни токена, ни кода набора в логах нет
+
+
+def test_missing_dictionary_weakens_the_filter_loudly_but_does_not_stop_the_service(monkeypatch, caplog, tmp_path):
+    from app import medical
+
+    monkeypatch.setattr(medical, "_RESOURCES", tmp_path / "нет-файла.json")
+    assert medical._load() == [] and "словарь медпроверки не загружен" in caplog.text
 
 
 def test_repeated_run_reuses_finished_answers(client, monkeypatch):

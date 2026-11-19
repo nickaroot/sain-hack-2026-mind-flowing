@@ -40,11 +40,13 @@ class FakeLLM:
         self.plan = plan or {"terms": "caffeine bedtime sleep time", "articles": []}
         self.payloads = []
         self.requests = []
+        self.options = []
 
-    async def chat_json(self, system, user, **_):
+    async def chat_json(self, system, user, **options):
         if self.fail:
             raise LLMError("недоступна")
         self.requests.append((system, user))  # дословно: по ним видно, что запрос к нейросети не изменился
+        self.options.append(options)
         data = json.loads(user)
         if "catalog" in data:
             self.catalog = data["catalog"]

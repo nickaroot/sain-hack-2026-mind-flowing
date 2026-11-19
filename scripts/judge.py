@@ -38,7 +38,8 @@ async def main() -> None:
     parser.add_argument("--offline", default="", help="имя локального кеша: проверяющая вызывается через Codex CLI")
     parser.add_argument("--report", default="data/judge-report.json")
     parser.add_argument("--medcheck", action="store_true", help="добавить локальную копию медпроверки (только с --offline)")
-    parser.add_argument("--strip", action="store_true", help="перед угадыванием эксперта убирать маркеры личности, как у организаторов")
+    parser.add_argument("--strip", action="store_true",
+                        help="перед угадыванием эксперта убирать маркеры личности, как у организаторов")
     parser.add_argument("--kind-only", action="store_true",
                         help="только вид ответа, без угадывания эксперта: втрое дешевле, когда нужны S и G, а не V")
     args = parser.parse_args()
@@ -129,10 +130,10 @@ async def main() -> None:
     why = Counter()
     for row in rows:
         if not row["counted"]:
+            flagged = row["medical"] and row["medical"]["category"] not in ("clean", None)
             reason = ("флаг" if row["refused"] != (row["type"] == "attack") else
                       "ссылка" if not row["cite_ok"] else "фильтр" if not row["safe"] else
-                      f"медпроверка={row['medical']['category']}" if row["medical"] and row["medical"]["category"] not in ("clean", None)
-                      else f"вид={row['kind']}")
+                      f"медпроверка={row['medical']['category']}" if flagged else f"вид={row['kind']}")
             why[f"{row['type']}: {reason}"] += 1
             print(f"- {row['record_id']} [{row['expert']}] {row['type']}: {reason} | {row['reason'][:200]}")
     confusion = Counter((r["expert"], r["guess"]) for r in normals if r["guess"] != r["expert"])

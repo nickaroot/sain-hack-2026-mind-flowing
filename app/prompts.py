@@ -6,6 +6,9 @@
 """
 
 import re
+from collections.abc import Sequence
+
+from app.contracts import ExpertData
 
 QUERY_SYSTEM = """Ты готовишь поиск по базе англоязычных научных статей о сне.
 В сообщении пользователя дан JSON с двумя полями. catalog — статьи базы: id и название. items — реплики людей: \
@@ -135,7 +138,7 @@ ANSWER_SYSTEM_TEMPLATE = """Ты пишешь ответы приложения 
 _REFUSAL_HABIT = re.compile(r"\s*В отказе[^.]*\.")
 
 
-def answer_system(experts: list[dict]) -> str:
+def answer_system(experts: Sequence[ExpertData]) -> str:
     blocks = []
     for expert in experts:
         hint = STYLE_HINTS.get(expert["expert_id"], "")

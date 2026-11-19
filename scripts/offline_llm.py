@@ -104,17 +104,17 @@ class CodexLLM(ReplayLLM):
                 self.BINARY, "exec", "-m", self._model, "-s", "read-only", "--skip-git-repo-check",
                 "--ephemeral", "-C", str(self.WORKDIR),
                 # Напрямую модель не знает уровня minimal (прокси организаторов его принимает): ближайший — none.
-                "-c", 'model_reasoning_effort="%s"' % ('none' if effort == 'minimal' else effort),
-                "-c", 'model_instructions_file="%s"' % system_path.resolve(),
+                "-c", f'model_reasoning_effort="{"none" if effort == "minimal" else effort}"',
+                "-c", f'model_instructions_file="{system_path.resolve()}"',
                 "-o", str(out_path), "-",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
             try:
                 stdout, _ = await asyncio.wait_for(process.communicate(prompt.encode()), self.TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 self.usage.failures += 1
-                raise LLMError("Codex не ответил вовремя")
+                raise LLMError("Codex не ответил вовремя") from None
         used = re.search(r"tokens used\s*\n\s*([\d,]+)", stdout.decode(errors="replace"))
         self.usage.calls += 1
         self.usage.prompt_tokens += int(used.group(1).replace(",", "")) if used else 0
@@ -128,7 +128,7 @@ class CodexLLM(ReplayLLM):
         except (OSError, ValueError):
             (ROOT / "last-error.txt").write_text(stdout.decode(errors="replace")[-4000:], encoding="utf-8")
             self.usage.failures += 1
-            raise LLMError("ответ Codex не разбирается как JSON")
+            raise LLMError("ответ Codex не разбирается как JSON") from None
         self._cache[key] = parsed
         with self._cache_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"key": key, "response": parsed}, ensure_ascii=False) + "\n")

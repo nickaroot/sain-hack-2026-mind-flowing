@@ -12,16 +12,18 @@ import asyncio
 import hashlib
 import logging
 from collections import OrderedDict
-from datetime import datetime
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app import config, llm
-from app.chat import MOSCOW, run_active
+from app.state import moscow_day, run_active
 
 log = logging.getLogger("app.voice")
+T = TypeVar("T")
 router = APIRouter(prefix="/api")
 
 # Голоса прокси: alloy, echo, fable, onyx, nova, shimmer. Эксперт без своего голоса говорит голосом по умолчанию.
@@ -36,6 +38,8 @@ AUDIO_EXTENSIONS = {
 PARALLEL_REQUESTS = 2  # одновременно в памяти не больше двух записей по 5 МБ
 MAX_WAITING = 6
 SPEECH_CACHE_SIZE = 30  # mp3 ответа весит 100–200 КБ: повторное прослушивание не тратит бюджет
+SPEECH_CACHE_BYTES = 16 * 1024 * 1024  # а ответ в 2000 символов — около 2 МБ: число записей память не ограничивает
+RUN_IN_PROGRESS = "Идёт обработка набора, попробуйте через пару минут"
 
 
 class SpeakRequest(BaseModel):
@@ -102,21 +106,62 @@ class VoiceProxy:
         raise VoiceUnavailable(502, "Сервис голоса ответил ошибкой, повторите позже", retry_after=10)
 
 
+class SpeechCache:
+    """Озвученные ответы: последние записи в пределах числа и общего размера. Старые вытесняются первыми."""
+
+    def __init__(self, max_items: int = SPEECH_CACHE_SIZE, max_bytes: int = SPEECH_CACHE_BYTES):
+        self.max_items, self.max_bytes = max_items, max_bytes
+        self.size = 0
+        self._items: OrderedDict[str, bytes] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def get(self, key: str) -> bytes | None:
+        return self._items.get(key)
+
+    def put(self, key: str, audio: bytes) -> None:
+        if len(audio) > self.max_bytes or key in self._items:
+            return  # запись больше всего кеша не хранится: она вытеснила бы всё остальное
+        self._items[key] = audio
+        self.size += len(audio)
+        while len(self._items) > self.max_items or self.size > self.max_bytes:
+            _, dropped = self._items.popitem(last=False)
+            self.size -= len(dropped)
+
+
 class VoiceState:
     """Очередь, суточные потолки и кеш озвученных ответов. Живёт в памяти процесса."""
 
     def __init__(self) -> None:
         self.gate = asyncio.Semaphore(PARALLEL_REQUESTS)
         self.waiting = 0
-        self.speech: OrderedDict[str, bytes] = OrderedDict()
+        self.speech = SpeechCache()
+        self.in_work: dict[str, asyncio.Task] = {}  # ответы, которые озвучиваются сейчас или ждут очереди
         self.day = ""
         self.transcriptions = 0
         self.speech_chars = 0
 
-    def roll(self) -> None:
-        today = datetime.now(MOSCOW).date().isoformat()
+    def _roll(self) -> None:
+        today = moscow_day()
         if today != self.day:
             self.day, self.transcriptions, self.speech_chars = today, 0, 0
+
+    def check_transcriptions(self) -> None:
+        self._roll()
+        if self.transcriptions >= config.VOICE_DAILY_TRANSCRIPTIONS:
+            raise HTTPException(429, "Распознавание на сегодня закончилось", headers={"Retry-After": "3600"})
+
+    def take_transcription(self) -> None:
+        """Проверяет суточный потолок и сразу списывает: между проверкой и списанием нет ожиданий."""
+        self.check_transcriptions()
+        self.transcriptions += 1
+
+    def take_speech(self, chars: int) -> None:
+        self._roll()
+        if self.speech_chars + chars > config.VOICE_DAILY_SPEECH_CHARS:
+            raise HTTPException(429, "Озвучивание на сегодня закончилось", headers={"Retry-After": "3600"})
+        self.speech_chars += chars
 
 
 def state_of(app: FastAPI) -> VoiceState:
@@ -125,15 +170,25 @@ def state_of(app: FastAPI) -> VoiceState:
     return app.state.voice
 
 
-async def _in_turn(app: FastAPI, state: VoiceState, work):
-    """Выполняет обращение к прокси в очереди голоса; прогон набора и переполненная очередь — отказ."""
+def _yield_to_run(app: FastAPI) -> None:
     if run_active(app):
-        raise HTTPException(503, "Идёт обработка набора, попробуйте через пару минут", headers={"Retry-After": "60"})
+        raise HTTPException(503, RUN_IN_PROGRESS, headers={"Retry-After": "60"})
+
+
+async def _in_turn(app: FastAPI, state: VoiceState, work: Callable[[], Awaitable[T]]) -> T:
+    """Выполняет обращение к прокси в очереди голоса; прогон набора и переполненная очередь — отказ.
+
+    Суточный потолок work проверяет и списывает сам, уже дождавшись очереди: пока запрос ждал, потолок
+    могли выбрать другие, а прогон набора — начаться. Запрос, уже ушедший к прокси, не отзывается:
+    таких не больше PARALLEL_REQUESTS, и каждый занимает у прогона один старт в общей очереди.
+    """
+    _yield_to_run(app)
     if state.waiting >= MAX_WAITING:
         raise HTTPException(429, "Слишком много запросов голоса, повторите через несколько секунд", headers={"Retry-After": "10"})
     state.waiting += 1
     try:
         async with state.gate:
+            _yield_to_run(app)
             return await work()
     except VoiceUnavailable as error:
         raise error.as_http() from error
@@ -149,18 +204,33 @@ async def transcribe(request: Request) -> dict:
     if extension is None:
         raise HTTPException(415, "Нужна аудиозапись: webm, ogg, mp3, wav, m4a или flac")
     state = state_of(request.app)
-    state.roll()
-    if state.transcriptions >= config.VOICE_DAILY_TRANSCRIPTIONS:
-        raise HTTPException(429, "Распознавание на сегодня закончилось", headers={"Retry-After": "3600"})
+    state.check_transcriptions()  # ранний отказ: запись до 5 МБ незачем читать, если потолок уже выбран
 
     async def work() -> str:
         audio = await request.body()  # читается уже в очереди: в памяти не больше двух записей сразу
         if not audio:
             raise HTTPException(422, "Пустая запись")
-        state.transcriptions += 1
+        state.take_transcription()
         return await VoiceProxy().transcribe(audio, extension, content_type)
 
     return {"text": await _in_turn(request.app, state, work)}
+
+
+async def _synthesize(app: FastAPI, state: VoiceState, key: str, text: str, voice: str) -> bytes:
+    async def work() -> bytes:
+        state.take_speech(len(text))
+        return await VoiceProxy().speak(text, voice)
+
+    audio = await _in_turn(app, state, work)
+    state.speech.put(key, audio)
+    return audio
+
+
+def _settle(state: VoiceState, key: str, task: asyncio.Task) -> None:
+    if state.in_work.get(key) is task:
+        del state.in_work[key]
+    if not task.cancelled():
+        task.exception()  # ошибку получит обработчик запроса; здесь она только помечается прочитанной
 
 
 @router.post("/speak")
@@ -171,16 +241,10 @@ async def speak(body: SpeakRequest, request: Request) -> Response:
     key = hashlib.sha256(f"{voice}\n{body.text}".encode()).hexdigest()
     audio = state.speech.get(key)
     if audio is None:
-        state.roll()
-        if state.speech_chars + len(body.text) > config.VOICE_DAILY_SPEECH_CHARS:
-            raise HTTPException(429, "Озвучивание на сегодня закончилось", headers={"Retry-After": "3600"})
-
-        async def work() -> bytes:
-            state.speech_chars += len(body.text)
-            return await VoiceProxy().speak(body.text, voice)
-
-        audio = await _in_turn(request.app, state, work)
-        state.speech[key] = audio
-        while len(state.speech) > SPEECH_CACHE_SIZE:
-            state.speech.popitem(last=False)
+        task = state.in_work.get(key)  # этот же ответ уже озвучивается: ждём его, а не платим второй раз
+        if task is None:
+            task = state.in_work[key] = asyncio.create_task(_synthesize(request.app, state, key, body.text, voice))
+            task.add_done_callback(lambda done: _settle(state, key, done))
+        # shield: если клиент не дождался, ответ доозвучится и достанется его повторному запросу
+        audio = await asyncio.shield(task)
     return Response(content=audio, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=3600"})

@@ -5,6 +5,7 @@ import asyncio
 import httpx
 
 from app import config
+from app.contracts import Dataset
 
 
 class HackApiError(RuntimeError):
@@ -13,7 +14,7 @@ class HackApiError(RuntimeError):
         self.status_code = status_code
 
 
-async def fetch_dataset(token: str, dataset_code: str | None) -> dict:
+async def fetch_dataset(token: str, dataset_code: str | None) -> Dataset:
     """GET /case/4/getData. Токен берётся из входящего /run, а не из окружения."""
     params = {"dataset_code": dataset_code} if dataset_code else {}
     last = HackApiError(0, "нет попыток")

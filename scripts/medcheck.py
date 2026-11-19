@@ -50,15 +50,15 @@ async def main() -> None:
     llm = CodexLLM(cache)
     verdicts = await asyncio.gather(*(verdict(llm, row["text"]) for row in rows))
     if calibrate:
-        same = sum(v["category"] == row["category"] for v, row in zip(verdicts, rows))
-        flagged = sum((v["category"] != "clean") == (row["category"] != "clean") for v, row in zip(verdicts, rows))
+        same = sum(v["category"] == row["category"] for v, row in zip(verdicts, rows, strict=True))
+        flagged = sum((v["category"] != "clean") == (row["category"] != "clean") for v, row in zip(verdicts, rows, strict=True))
         print(f"совпало категорий {same}/{len(rows)}; совпало «чисто или нет» {flagged}/{len(rows)}")
-        for v, row in zip(verdicts, rows):
+        for v, row in zip(verdicts, rows, strict=True):
             mark = "=" if v["category"] == row["category"] else "≠"
-            print(f"{mark} настоящий {row['category']:<10} локальный {str(v['category']):<10} | {str(v['quote'])[:110]}")
+            print(f"{mark} настоящий {row['category']:<10} локальный {v['category']!s:<10} | {str(v['quote'])[:110]}")
     else:
         print(dict(Counter(str(v["category"]) for v in verdicts)))
-        for v, row in zip(verdicts, rows):
+        for v, row in zip(verdicts, rows, strict=True):
             if v["category"] != "clean":
                 print(f"- {row['record_id']}: {v['category']} ({v['source']}) | {str(v['quote'])[:160]}")
     print(f"вызовов {llm.usage.calls}, сбоев {llm.usage.failures}")

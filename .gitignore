@@ -31,3 +31,8 @@ dist/
 
 # Архив команды с секретами
 team23/
+
+# Следы проверок
+.coverage
+.mypy_cache/
+.ruff_cache/
