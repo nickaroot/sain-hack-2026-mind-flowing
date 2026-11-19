@@ -1,0 +1,29 @@
+{
+  "name": "mind-flowing-client",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Клиент кейса 4 «Эксперт как плейлист»: выбор эксперта и разговор с ним",
+  "scripts": {
+    "start": "npm install --no-audit --no-fund && vite --open",
+    "dev": "vite",
+    "mock": "vite --mode mock",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/golos-text": "^5.3.0",
+    "@fontsource-variable/source-serif-4": "^5.3.1",
+    "lucide-react": "^1.76.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
