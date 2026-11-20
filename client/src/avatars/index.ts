@@ -9,16 +9,16 @@
 //   listening — пользователь записывает вопрос голосом
 // getLevel отдаёт громкость звучащего голоса (0…1) или null, если звука нет: по ней движется рот.
 //
-// Сейчас трое экспертов — персонажи из листов кадров (SpriteAvatar, sprites.ts). Тот же слот примет
-// и Rive, и Lottie, и видео: достаточно компонента с этими свойствами.
+// Трое экспертов — Rive-сцены (RiveAvatar, scenes.ts: сетка с костями, рот по голосу, взгляд за курсором).
+// Листы кадров (SpriteAvatar, sprites.ts) остались запасным вариантом, если сцена не загрузилась.
 // Эксперты вымышленные — без сходства с живыми людьми.
 import type { ComponentType } from "react"
-import { SpriteAvatar } from "./SpriteAvatar"
+import { RiveAvatar } from "./RiveAvatar"
 import { SPRITES } from "./sprites"
 
 export type AvatarState = "idle" | "active" | "speaking" | "thinking" | "listening"
 export type AvatarProps = { expertId: string; name: string; state: AvatarState; size: number; getLevel?: () => number | null }
 
 export const customAvatars: Record<string, ComponentType<AvatarProps>> = Object.fromEntries(
-  Object.keys(SPRITES).map((id) => [id, SpriteAvatar]),
+  Object.keys(SPRITES).map((id) => [id, RiveAvatar]),
 )

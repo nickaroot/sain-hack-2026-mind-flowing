@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import { ArrowUp, Check, LoaderCircle, Mic, X } from "lucide-react"
+import { ArrowUp, LoaderCircle, Mic, Square, X } from "lucide-react"
 import { MAX_TEXT } from "../api"
 import { useElapsed } from "../hooks"
 import type { useRecorder } from "../hooks"
@@ -22,20 +22,27 @@ export function Composer({ value, onChange, onSubmit, pending, placeholder, reco
   const seconds = useElapsed(recorder.startedAt, recorder.state === "recording")
   const canSend = value.trim().length > 0 && !pending
 
-  // Поле растёт вместе с текстом до шести строк.
+  // Поле растёт вместе с текстом до шести строк. Пустое поле всегда в одну строку: подсказка на высоту
+  // не влияет, а при смене ширины окна высота пересчитывается, а не остаётся от прежней ширины.
   useEffect(() => {
     const element = field.current
     if (!element) return
-    element.style.height = "auto"
-    element.style.height = `${Math.min(element.scrollHeight, 160)}px`
+    const fit = () => {
+      element.style.height = "auto"
+      element.style.height = value ? `${Math.min(element.scrollHeight, 160)}px` : ""
+    }
+    fit()
+    window.addEventListener("resize", fit)
+    return () => window.removeEventListener("resize", fit)
   }, [value, recorder.state])
 
   if (recorder.state !== "idle") {
+    // Диктовка: волна и время, справа — «стоп» (текст в поле, его можно поправить) и «отправить» (сразу в разговор).
     const busy = recorder.state === "transcribing"
     return (
       <div className="composer-wrap">
         <div className="composer" data-mode="record">
-          <button type="button" className="icon-button soft" aria-label="Отменить запись" onClick={recorder.cancel} disabled={busy}>
+          <button type="button" className="icon-button" aria-label="Отменить запись" onClick={recorder.cancel} disabled={busy}>
             <X size={20} />
           </button>
           <span className="wave" aria-hidden="true">
@@ -46,10 +53,19 @@ export function Composer({ value, onChange, onSubmit, pending, placeholder, reco
             })}
           </span>
           <span className="record-status" role="status">
-            {busy ? "Распознаю…" : `Запись ${clock(seconds)}`}
+            {busy ? "Распознаю…" : clock(seconds)}
           </span>
-          <button type="button" className="icon-button send" aria-label="Готово, распознать" onClick={() => void recorder.finish()} disabled={busy}>
-            {busy ? <LoaderCircle size={20} className="spin" /> : <Check size={20} strokeWidth={2.4} />}
+          <button type="button" className="icon-button soft" aria-label="Остановить: текст появится в поле" onClick={() => void recorder.finish()} disabled={busy}>
+            {busy && recorder.ending === "insert" ? <LoaderCircle size={20} className="spin" /> : <Square size={14} fill="currentColor" />}
+          </button>
+          <button
+            type="button"
+            className="icon-button send"
+            aria-label={pending ? "Ответ готовится: отправить можно будет после него" : "Отправить вопрос"}
+            onClick={() => void recorder.send()}
+            disabled={busy || pending}
+          >
+            {busy && recorder.ending === "send" ? <LoaderCircle size={20} className="spin" /> : <ArrowUp size={20} strokeWidth={2.4} />}
           </button>
         </div>
       </div>

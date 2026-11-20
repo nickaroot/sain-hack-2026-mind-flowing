@@ -5,7 +5,19 @@
   --serif: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
-  --h: 262;
+  --h: 168;
+  /* Скругления — четыре ступени: метки, элементы управления, карточки, листы. Круглые только аватар и то, что на нём. */
+  --r-xs: 6px;
+  --r-m: 10px;
+  --r-l: 14px;
+  --r-xl: 20px;
+  /* Высота кнопок и полей: под палец 44, под мышь 36. */
+  --ctl: 44px;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root {
+    --ctl: 36px;
+  }
 }
 :root,
 [data-theme="light"] {
@@ -19,7 +31,9 @@
   --text3: #646c79;
   --on-acc: #ffffff;
   --scrim: rgba(15, 18, 23, 0.44);
-  --shadow: 0 1px 2px rgba(20, 23, 28, 0.04), 0 10px 28px rgba(20, 23, 28, 0.07);
+  /* Тень есть только у того, что лежит поверх страницы; у остального — тонкая рамка. */
+  --shadow-rest: 0 1px 2px rgba(20, 23, 28, 0.05);
+  --shadow-pop: 0 0 0 1px rgba(20, 23, 28, 0.04), 0 4px 12px rgba(20, 23, 28, 0.08), 0 16px 32px rgba(20, 23, 28, 0.08);
   --acc-l: 0.5;
   --acc-c: 0.15;
   --tint-l: 0.95;
@@ -36,7 +50,8 @@
   --text3: #8d96a4;
   --on-acc: #0f1217;
   --scrim: rgba(0, 0, 0, 0.6);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-rest: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 24px rgba(0, 0, 0, 0.5);
   --acc-l: 0.8;
   --acc-c: 0.11;
   --tint-l: 0.28;
@@ -106,11 +121,11 @@ p {
 }
 .top {
   flex: none;
-  min-height: 60px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 8px 8px 12px;
+  padding: 6px 8px 6px 12px;
 }
 .top-space {
   flex: 1;
@@ -119,9 +134,9 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 44px;
+  height: var(--ctl);
   padding: 0 4px;
-  border-radius: 12px;
+  border-radius: var(--r-m);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -146,12 +161,12 @@ p {
 .dock {
   flex: none;
   width: 100%;
-  max-width: 752px;
+  max-width: 688px;
   margin: 0 auto;
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .disclaimer {
   text-align: center;
@@ -178,11 +193,13 @@ p {
 .boot strong {
   color: var(--text);
 }
+/* Пометка сборки на заглушках: на узком экране ей нет места в шапке. */
 .mock-badge {
+  display: none;
   font-size: 12px;
   line-height: 24px;
   padding: 0 8px;
-  border-radius: 8px;
+  border-radius: var(--r-xs);
   background: var(--surface2);
   color: var(--text2);
 }
@@ -190,9 +207,9 @@ p {
 /* ——— Кнопки ——— */
 .icon-button {
   flex: none;
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
+  width: var(--ctl);
+  height: var(--ctl);
+  border-radius: var(--r-m);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -230,16 +247,20 @@ p {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 44px;
-  padding: 0 16px;
-  border-radius: 12px;
+  min-height: var(--ctl);
+  padding: 0 14px;
+  border-radius: var(--r-m);
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
 }
 .button-solid {
   background: var(--text);
   color: var(--bg);
+}
+.button-solid:hover {
+  opacity: 0.88;
 }
 .button-outline {
   border: 1px solid var(--line);
@@ -254,19 +275,23 @@ p {
   padding: 0 12px;
 }
 .link-button {
-  min-height: 32px;
+  min-height: 28px;
   padding: 0 8px;
   font-size: 13px;
   font-weight: 500;
   color: var(--acc);
-  border-radius: 8px;
+  border-radius: var(--r-xs);
+  transition: background-color 0.15s ease;
+}
+.link-button:hover {
+  background: var(--tint);
 }
 .chip,
 .chip-accent {
   flex: none;
   height: 36px;
-  padding: 0 14px;
-  border-radius: 999px;
+  padding: 0 12px;
+  border-radius: var(--r-m);
   font-size: 14px;
   white-space: nowrap;
 }
@@ -278,15 +303,15 @@ p {
 .chip:hover {
   background: var(--surface2);
 }
+/* Черты эксперта — спокойные метки, а не кнопки: нейтральный фон, обычный вес. */
 .chip-accent {
-  height: 32px;
-  padding: 0 12px;
-  line-height: 32px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-xs);
+  line-height: 28px;
   font-size: 13px;
-  font-weight: 500;
-  background: var(--tint);
-  color: var(--acc);
-  transition: background-color 0.3s ease, color 0.3s ease;
+  background: var(--surface2);
+  color: var(--text2);
 }
 .spin {
   animation: spin 0.9s linear infinite;
@@ -340,7 +365,8 @@ p {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  gap: 12px;
   text-align: center;
 }
 .gallery-head h1 {
@@ -390,9 +416,10 @@ p {
 }
 .stage-arrow {
   position: absolute;
-  top: calc(50% - 22px);
+  top: calc(50% - var(--ctl) / 2);
   z-index: 5;
   display: none;
+  border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--text);
@@ -406,52 +433,25 @@ p {
 .stage-arrow:disabled {
   opacity: 0.35;
 }
-.voice-pill {
-  position: relative;
-  z-index: 6;
-  margin-top: -34px;
-  height: 44px;
-  padding: 0 16px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--acc);
-  font-size: 14px;
-  font-weight: 500;
-  box-shadow: var(--shadow);
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  transition: color 0.3s ease;
+/* Выбранный эксперт отзывается на нажатие: по нему начинается реплика — так же, как по кнопке в карточке. */
+.slide[data-pos="center"] {
+  cursor: pointer;
 }
-.bars {
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+.slide[data-pos="center"] .avatar-live {
+  transition: transform 0.2s var(--ease), outline-color 0.3s ease;
 }
-.bars i {
-  width: 3px;
-  height: 16px;
-  border-radius: 2px;
-  background: currentColor;
-  animation: bar 0.8s ease-in-out infinite;
+.slide[data-pos="center"]:hover .avatar-live {
+  transform: scale(1.02);
 }
-.bars i:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.bars i:nth-child(3) {
-  animation-delay: 0.3s;
-}
-.bars i:nth-child(4) {
-  animation-delay: 0.45s;
+.slide[data-pos="center"]:active .avatar-live {
+  transform: scale(0.98);
 }
 .gallery-name {
   animation: swap 0.3s var(--ease);
 }
 .gallery-name h2 {
-  font-size: 21px;
-  line-height: 27px;
+  font-size: 20px;
+  line-height: 26px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -465,15 +465,49 @@ p {
   align-self: stretch;
   width: 100%;
   max-width: 640px;
-  margin: 0 auto;
+  margin: 4px auto 0;
   padding: 14px 16px;
-  border-radius: 20px;
+  border-radius: var(--r-l);
   background: var(--surface);
   border: 1px solid var(--line);
   text-align: left;
   display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+/* Кнопка «играть» — как у голосового сообщения: круг цвета эксперта слева от текста. */
+.quote-play {
+  flex: none;
+  width: max(40px, var(--ctl));
+  height: max(40px, var(--ctl));
+  border-radius: 50%;
+  background: var(--acc);
+  color: var(--on-acc);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.3s ease, transform 0.14s ease, opacity 0.15s ease;
+}
+/* Треугольник оптически смещён: его центр тяжести левее середины. */
+.quote-play .lucide-play {
+  margin-left: 2px;
+}
+.quote-play:hover {
+  opacity: 0.9;
+}
+.quote-play:active {
+  transform: scale(0.94);
+}
+/* Браузер ждёт касания, чтобы разрешить звук: кнопка зовёт нажать. */
+.quote-play[data-wait="true"] {
+  animation: ring 1.6s ease-out infinite;
+}
+.quote-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .quote-label {
   font-size: 13px;
@@ -485,9 +519,19 @@ p {
   font-size: 16px;
   line-height: 24px;
 }
-.word {
+/* Текст, который проявляется по буквам (TypedText): буквы красит цикл кадров, здесь только исходное и конечное состояние. */
+.typed .ch {
   opacity: 0;
-  animation: word 0.28s ease-out forwards;
+}
+.typed[data-done="true"] .ch {
+  opacity: 1;
+}
+/* Пока эксперт не заговорил, вместо реплики — приглашение нажать. */
+.quote-hint {
+  color: var(--text3);
+}
+.icon-button[aria-pressed="true"] {
+  color: var(--acc);
 }
 .traits {
   align-self: stretch;
@@ -539,11 +583,11 @@ p {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  padding: 7px 7px 7px 18px;
-  border-radius: 28px;
+  padding: 6px 6px 6px 16px;
+  border-radius: var(--r-l);
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-rest);
   transition: border-color 0.2s ease;
 }
 .composer:focus-within,
@@ -553,14 +597,14 @@ p {
 .composer[data-mode="record"] {
   align-items: center;
   gap: 10px;
-  padding-left: 7px;
+  padding-left: 6px;
   animation: swap 0.2s ease-out;
 }
 .composer textarea {
   flex: 1;
   min-width: 0;
   max-height: 160px;
-  padding: 10px 0;
+  padding: calc((var(--ctl) - 24px) / 2) 0;
   border: 0;
   outline: 0;
   resize: none;
@@ -570,6 +614,9 @@ p {
 }
 .composer textarea::placeholder {
   color: var(--text3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .wave {
   flex: 1;
@@ -600,14 +647,18 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 40px;
-  padding: 0 12px 0 8px;
-  border-radius: 999px;
-  background: var(--tint);
-  color: var(--acc);
-  font-size: 15px;
+  height: var(--ctl);
+  padding: 0 10px 0 6px;
+  border-radius: var(--r-m);
+  font-size: 14px;
   font-weight: 500;
-  transition: background-color 0.3s ease, color 0.3s ease;
+  transition: background-color 0.15s ease;
+}
+.expert-pill:hover {
+  background: var(--surface2);
+}
+.expert-pill > svg {
+  color: var(--text3);
 }
 .expert-pill .avatar-tile {
   background: transparent;
@@ -618,14 +669,13 @@ p {
   display: none;
 }
 .new-chat {
-  width: 44px;
+  width: var(--ctl);
   padding: 0;
-  border-radius: 999px;
 }
 
 /* ——— Лента разговора ——— */
 .thread {
-  max-width: 752px;
+  max-width: 688px;
   margin: 0 auto;
   padding: 12px 16px 8px;
   display: flex;
@@ -645,8 +695,8 @@ p {
 .bubble {
   align-self: flex-end;
   max-width: min(85%, 480px);
-  padding: 10px 16px;
-  border-radius: 20px 20px 6px 20px;
+  padding: 8px 14px;
+  border-radius: var(--r-l) var(--r-l) 4px var(--r-l);
   background: var(--surface2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -668,7 +718,8 @@ p {
 }
 .reply-text p {
   font-size: 16px;
-  line-height: 1.66;
+  line-height: 26px;
+  text-wrap: pretty;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -695,17 +746,17 @@ p {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 16px;
+  border-radius: var(--r-l);
   border: 1px solid var(--line);
   background: var(--surface);
   text-align: left;
-  transition: border-color 0.3s ease, background-color 0.3s ease;
+  transition: border-color 0.15s ease, background-color 0.3s ease;
 }
 .citation:hover {
-  border-color: var(--acc);
+  border-color: color-mix(in oklab, var(--text) 30%, var(--line));
 }
 .citation[data-open="true"] {
-  border-color: var(--acc);
+  border-color: color-mix(in oklab, var(--acc) 40%, var(--line));
   background: var(--tint);
 }
 .citation-icon {
@@ -751,7 +802,7 @@ p {
   justify-content: space-between;
   gap: 4px 12px;
   padding: 8px 8px 8px 14px;
-  border-radius: 16px;
+  border-radius: var(--r-l);
   background: var(--surface2);
   font-size: 14px;
   line-height: 20px;
@@ -776,7 +827,7 @@ p {
   position: relative;
   display: flex;
   padding: 4px;
-  border-radius: 999px;
+  border-radius: var(--r-m);
   background: var(--surface2);
 }
 .switch[data-many="true"] {
@@ -788,18 +839,18 @@ p {
   top: 4px;
   bottom: 4px;
   left: 4px;
-  border-radius: 999px;
+  border-radius: var(--r-xs);
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(20, 23, 28, 0.14);
+  box-shadow: var(--shadow-rest);
   transition: transform 0.28s cubic-bezier(0.3, 1.3, 0.5, 1);
 }
 .switch button {
   position: relative;
   flex: 1 1 0;
   min-width: 0;
-  height: 40px;
+  height: calc(var(--ctl) - 8px);
   padding: 0 10px;
-  border-radius: 999px;
+  border-radius: var(--r-xs);
   font-size: 14px;
   font-weight: 500;
   color: var(--text2);
@@ -811,9 +862,11 @@ p {
 .switch[data-many="true"] button {
   flex: none;
 }
+.switch button:hover {
+  color: var(--text);
+}
 .switch button[aria-checked="true"] {
   color: var(--acc);
-  font-weight: 600;
 }
 .switch[data-many="true"] button[aria-checked="true"] {
   background: var(--surface);
@@ -839,11 +892,11 @@ p {
 .dots-pulse {
   flex: none;
   display: inline-flex;
-  gap: 5px;
+  gap: 4px;
 }
 .dots-pulse i {
-  width: 9px;
-  height: 9px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: oklch(var(--acc-l) var(--acc-c) var(--h));
   animation: pulse 1.2s ease-in-out infinite;
@@ -860,8 +913,8 @@ p {
 .shimmer {
   flex: 1;
   min-width: 0;
-  font-size: 15px;
-  line-height: 22px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 500;
   background: linear-gradient(90deg, var(--text3) 35%, var(--text) 50%, var(--text3) 65%);
   background-size: 200% 100%;
@@ -880,7 +933,7 @@ p {
   display: flex;
   gap: 10px;
   padding: 14px;
-  border-radius: 16px;
+  border-radius: var(--r-l);
   border: 1px solid var(--line);
   background: var(--surface);
 }
@@ -899,8 +952,8 @@ p {
   color: var(--text2);
 }
 .problem-body strong {
-  font-size: 15px;
-  line-height: 21px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 600;
   color: var(--text);
 }
@@ -935,9 +988,8 @@ p {
   flex-direction: column;
   gap: 6px;
   padding: 8px 16px calc(20px + env(safe-area-inset-bottom));
-  border-radius: 28px 28px 0 0;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
   background: var(--surface);
-  box-shadow: 0 -8px 40px rgba(15, 18, 23, 0.18);
   outline: none;
   transform: translateY(100%);
   transition: transform 0.32s var(--ease-sheet);
@@ -986,7 +1038,7 @@ p {
   align-items: center;
   gap: 12px;
   padding: 10px;
-  border-radius: 16px;
+  border-radius: var(--r-m);
   text-align: left;
   transition: background-color 0.15s ease;
 }
@@ -1028,8 +1080,8 @@ p {
   margin-top: 6px;
 }
 .about p {
-  font-size: 15px;
-  line-height: 23px;
+  font-size: 16px;
+  line-height: 24px;
 }
 .about p.note {
   font-size: 13px;
@@ -1044,7 +1096,7 @@ p {
 }
 .source h3 {
   font-family: var(--serif);
-  font-size: 21px;
+  font-size: 20px;
   line-height: 28px;
   font-weight: 600;
 }
@@ -1055,7 +1107,7 @@ p {
 }
 .source-meta > span {
   padding: 4px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-xs);
   background: var(--surface2);
   font-size: 13px;
   line-height: 20px;
@@ -1118,25 +1170,13 @@ p {
 }
 
 /* ——— Движение ——— */
-@keyframes word {
-  from {
-    opacity: 0;
-    filter: blur(3px);
-  }
-  to {
-    opacity: 1;
-    filter: blur(0);
-  }
-}
 @keyframes swap {
   from {
     opacity: 0;
-    filter: blur(4px);
     transform: translateY(4px);
   }
   to {
     opacity: 1;
-    filter: blur(0);
     transform: none;
   }
 }
@@ -1169,15 +1209,6 @@ p {
     background-position: -200% 0;
   }
 }
-@keyframes bar {
-  0%,
-  100% {
-    transform: scaleY(0.35);
-  }
-  50% {
-    transform: scaleY(1);
-  }
-}
 @keyframes breathe {
   0%,
   100% {
@@ -1189,10 +1220,10 @@ p {
 }
 @keyframes ring {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--acc) 45%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--acc) 35%, transparent);
   }
   70% {
-    box-shadow: 0 0 0 16px transparent;
+    box-shadow: 0 0 0 10px transparent;
   }
   100% {
     box-shadow: 0 0 0 0 transparent;
@@ -1207,7 +1238,10 @@ p {
 /* ——— Широкий экран ——— */
 @media (min-width: 720px) {
   .top {
-    padding: 8px 16px 8px 20px;
+    padding: 6px 16px 6px 20px;
+  }
+  .mock-badge {
+    display: inline;
   }
   .app[data-screen="chat"] .brand span,
   .expert-pill-full,
@@ -1223,16 +1257,14 @@ p {
   }
   .new-chat {
     width: auto;
-    padding: 0 14px;
-    border-radius: 12px;
+    padding: 0 12px;
   }
   .gallery {
-    gap: 14px;
     padding-top: 0;
   }
   .gallery-head h1 {
-    font-size: 30px;
-    line-height: 36px;
+    font-size: 28px;
+    line-height: 34px;
     letter-spacing: -0.02em;
   }
   .stage {
@@ -1248,22 +1280,13 @@ p {
   .stage-arrow {
     display: inline-flex;
   }
-  .gallery-name h2 {
-    font-size: 24px;
-    line-height: 30px;
-  }
-  .gallery-name p {
-    font-size: 15px;
-    line-height: 22px;
-  }
+  /* Карточка реплики той же ширины, что поле ввода под ней. */
   .quote {
-    max-width: 720px;
-    padding: 14px 20px;
+    max-width: 664px;
+    padding: 16px 20px;
   }
   .quote-text {
-    min-height: 78px;
-    font-size: 17px;
-    line-height: 26px;
+    min-height: 72px;
   }
   .traits {
     justify-content: center;
@@ -1272,12 +1295,18 @@ p {
     padding: 0;
     overflow: visible;
   }
+  /* Готовые вопросы идут потоком от левого края поля ввода и переносятся, не выходя за его правый край. */
   .suggestions {
-    align-self: center;
-    width: max-content;
-    max-width: calc(100vw - 32px);
+    flex-wrap: wrap;
+    justify-content: flex-start;
     margin: 0;
     padding: 0;
+    overflow: visible;
+  }
+  .suggestions .chip {
+    height: 32px;
+    padding: 0 10px;
+    font-size: 13px;
   }
   .dots {
     display: none;
@@ -1292,8 +1321,8 @@ p {
     max-width: 480px;
     max-height: 80dvh;
     padding: 14px 24px 24px;
-    border-radius: 24px;
-    box-shadow: var(--shadow);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-pop);
     opacity: 0;
     transform: translateY(12px) scale(0.97);
     transition: transform 0.2s var(--ease), opacity 0.2s ease;
@@ -1307,14 +1336,13 @@ p {
   .overlay[data-kind="menu"] {
     align-items: flex-start;
     justify-content: flex-start;
-    padding: 62px 0 0 150px;
+    padding: 52px 0 0 150px;
   }
   .overlay[data-kind="menu"] .overlay-backdrop {
     background: transparent;
   }
   .overlay[data-kind="menu"] .sheet {
     max-width: 400px;
-    border: 1px solid var(--line);
     transform-origin: top left;
     transform: scale(0.96);
     transition-duration: 0.16s;
@@ -1336,7 +1364,8 @@ p {
 /* ——— Невысокое окно (ноутбук 1366×768 и меньше): галерея сжимается, чтобы реплика эксперта осталась на экране ——— */
 @media (min-width: 720px) and (max-height: 800px) {
   .gallery {
-    gap: 10px;
+    gap: 8px;
+    justify-content: flex-start;
   }
   .gallery-head p {
     display: none;
@@ -1350,7 +1379,7 @@ p {
     top: -16px;
   }
   .quote-text {
-    min-height: 52px;
+    min-height: 48px;
   }
 }
 /* Если галерея всё же не помещается, нижний край растворяется: видно, что её можно прокрутить. */
@@ -1367,7 +1396,7 @@ p {
   overflow: hidden;
 }
 .avatar-live[data-large="true"] {
-  outline: 3px solid var(--acc);
+  outline: 2px solid var(--acc);
   outline-offset: 3px;
   transition: outline-color 0.3s ease;
 }
@@ -1389,6 +1418,18 @@ p {
 }
 .avatar-fade {
   animation: frame-in 0.09s linear;
+}
+/* Холст Rive-сцены: проявляется поверх кадра покоя, когда сцена загрузилась. */
+.avatar-rive {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.avatar-rive[data-ready="true"] {
+  opacity: 1;
 }
 .avatar-live[data-state="active"] .avatar-motion,
 .avatar-live[data-state="listening"] .avatar-motion {

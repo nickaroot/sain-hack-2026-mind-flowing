@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronDown, Moon, Plus, Sun } from "lucide-react"
+import { ChevronDown, Moon, Plus, SunMoon, Volume2, VolumeX } from "lucide-react"
 import { ApiError, MOCK, chat, getExperts } from "./api"
 import type { Citation } from "./api"
-import { historyFor } from "./chat"
+import { answerOf, historyFor } from "./chat"
 import type { Turn } from "./chat"
 import { accentStyle, persona } from "./experts"
 import type { Persona } from "./experts"
-import { useMediaQuery, useRecorder, useSpeech, useTheme } from "./hooks"
+import { useMediaQuery, useRecorder, useTheme } from "./hooks"
+import { useSpeech } from "./speech"
 import { Avatar } from "./components/Avatar"
 import { Composer } from "./components/Composer"
 import { ExpertAbout, ExpertPicker } from "./components/ExpertSheets"
@@ -44,12 +45,20 @@ export function App() {
   const [picker, setPicker] = useState(false)
   const [about, setAbout] = useState(false)
   const speech = useSpeech()
-  const recorder = useRecorder(useCallback((text: string) => setDraft((current) => (current ? `${current} ${text}` : text)), []))
+  // Диктовка: «стоп» дописывает распознанный текст в поле, «отправить» сразу задаёт вопрос.
+  const dictated = useCallback((text: string) => setDraft((current) => (current ? `${current} ${text}` : text)), [])
+  const sendDictated = useRef<(text: string) => void>(dictated)
+  const recorder = useRecorder(
+    dictated,
+    useCallback((text: string) => sendDictated.current(text), []),
+  )
 
   const turnsRef = useRef(turns)
   turnsRef.current = turns
   const activeRef = useRef(activeId)
   activeRef.current = activeId
+  const speechRef = useRef(speech)
+  speechRef.current = speech
 
   // Эксперты приходят с сервера: новый появится в галерее без правок клиента.
   const load = useCallback(() => {
@@ -73,7 +82,19 @@ export function App() {
   const run = useCallback(async (turn: Turn, before: Turn[], expertId: string) => {
     try {
       const response = await chat(expertId, turn.question, historyFor(before, expertId))
-      patch(turn.id, { status: "done", response, error: undefined, fresh: true })
+      // Голос включён — эксперт сразу читает ответ, а текст проявляется вместе с речью.
+      // Начало озвучки готовится, пока ещё виден индикатор ожидания: ответ не появляется немым.
+      const voice = speechRef.current
+      const speaks = voice.auto && voice.unlocked
+      const text = answerOf(response, expertId).text
+      // Ждём голос недолго: синтез целого ответа у организаторов бывает медленным, а текст уже готов.
+      let late = false
+      if (speaks) {
+        patch(turn.id, { voicing: true })
+        late = !(await voice.ready(text, expertId, 8_000))
+      }
+      patch(turn.id, { status: "done", response, error: undefined, fresh: true, voicing: false, late })
+      if (speaks) void speechRef.current.narrate(`${turn.id}:${expertId}`, text, expertId)
     } catch (reason) {
       patch(turn.id, { status: "error", error: reason instanceof ApiError ? reason : new ApiError("unknown", "") })
     }
@@ -91,6 +112,8 @@ export function App() {
     },
     [run],
   )
+  // Пока готовится предыдущий ответ, новый вопрос не отправить — продиктованное остаётся в поле.
+  sendDictated.current = (text) => (pending ? dictated(text) : ask(draft ? `${draft} ${text}` : text))
 
   // Повтор шлёт тот же вопрос: сервер дождётся уже начатого расчёта и второй раз его не посчитает.
   const retry = useCallback(
@@ -111,6 +134,14 @@ export function App() {
     (id: string) => {
       speech.stop()
       setActiveId(id)
+      // Тот же ответ другим голосом. Без звука текст меняется сразу. Со звуком новый эксперт его произносит:
+      // текст последнего ответа появляется заново, вместе с речью, — голос и текст неразрывны.
+      const last = [...turnsRef.current].reverse().find((turn) => turn.status === "done" && turn.response)
+      if (last?.response) {
+        const speaks = speech.auto && speech.unlocked && id !== activeRef.current
+        setTurns((list) => list.map((turn) => (!!turn.fresh === (speaks && turn.id === last.id) ? turn : { ...turn, fresh: speaks && turn.id === last.id })))
+        if (speaks) void speech.narrate(`${last.id}:${id}`, answerOf(last.response, id).text, id)
+      }
       try {
         localStorage.setItem("mf-expert", id)
       } catch {
@@ -180,8 +211,17 @@ export function App() {
             <span>Новый разговор</span>
           </button>
         )}
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => speech.setAuto(!speech.auto)}
+          aria-pressed={speech.auto}
+          aria-label={speech.auto ? "Голос включён: эксперты отвечают вслух. Выключить" : "Голос выключен: ответы только текстом. Включить"}
+        >
+          {speech.auto ? <Volume2 size={20} /> : <VolumeX size={20} />}
+        </button>
         <button type="button" className="icon-button" onClick={toggleTheme} aria-label={theme === "dark" ? "Светлая тема" : "Тёмная тема"}>
-          {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
+          <SunMoon size={20} />
         </button>
       </header>
 

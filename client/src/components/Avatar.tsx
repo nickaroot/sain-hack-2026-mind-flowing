@@ -14,7 +14,7 @@ export function Avatar({ persona, state, size, getLevel }: Props) {
   if (size < 96) {
     const Icon = persona.icon
     return (
-      <span className="avatar-tile" data-state={state} style={{ width: size, height: size, borderRadius: size * 0.32 }} aria-hidden="true">
+      <span className="avatar-tile" data-state={state} style={{ width: size, height: size, borderRadius: "50%" }} aria-hidden="true">
         {Icon ? <Icon size={Math.round(size * 0.56)} strokeWidth={2} /> : <b style={{ fontSize: size * 0.5 }}>{persona.name[0]}</b>}
       </span>
     )

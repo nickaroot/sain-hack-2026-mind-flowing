@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react"
 import type { CSSProperties } from "react"
-import { BookOpen, Check, ChevronRight, Clock, Copy, LoaderCircle, RotateCw, Square, Volume2, WifiOff } from "lucide-react"
+import { BookOpen, Check, ChevronRight, Clock, Copy, LoaderCircle, Play, RotateCw, Square, WifiOff } from "lucide-react"
 import { Avatar } from "./Avatar"
 import { answerOf } from "../chat"
 import type { Turn } from "../chat"
 import type { ApiError, Citation } from "../api"
 import type { Persona } from "../experts"
 import { useElapsed } from "../hooks"
-import type { useSpeech } from "../hooks"
+import { useSpokenWords } from "../speech"
+import type { Speech } from "../speech"
+import { TypedText } from "./TypedText"
 
 type Props = {
   turns: Turn[]
@@ -18,7 +20,7 @@ type Props = {
   onRetry: (turnId: string) => void
   onSource: (citation: Citation) => void
   onRevealed: (turnId: string) => void
-  speech: ReturnType<typeof useSpeech>
+  speech: Speech
   registerTurn: (turnId: string, element: HTMLElement | null) => void
 }
 
@@ -32,7 +34,7 @@ export function Thread(props: Props) {
       {turns.map((turn, position) => (
         <section key={turn.id} className="turn" data-last={position === turns.length - 1} ref={(element) => props.registerTurn(turn.id, element)}>
           <div className="bubble">{turn.question}</div>
-          {turn.status === "pending" && <Waiting startedAt={turn.startedAt} active={active} personas={props.personas} />}
+          {turn.status === "pending" && <Waiting startedAt={turn.startedAt} active={active} personas={props.personas} voicing={!!turn.voicing} />}
           {turn.status === "error" && turn.error && <Problem turn={turn} error={turn.error} onRetry={() => props.onRetry(turn.id)} />}
           {turn.status === "done" && turn.response && <Reply {...props} turn={turn} withSwitch={turn.id === lastDone} />}
         </section>
@@ -42,10 +44,10 @@ export function Thread(props: Props) {
 }
 
 /** Ожидание: потокового ответа нет, сервер отвечает одним куском через 10–20 секунд (до 90). */
-function Waiting({ startedAt, active, personas }: { startedAt: number; active: Persona; personas: Persona[] }) {
+function Waiting({ startedAt, active, personas, voicing }: { startedAt: number; active: Persona; personas: Persona[]; voicing: boolean }) {
   const seconds = useElapsed(startedAt, true)
   // Этапы показаны по времени: порядок как на сервере (поиск → чтение → ответ), но это не его отчёт.
-  const status = seconds < 4 ? "Ищу подходящее исследование…" : seconds < 9 ? "Читаю раздел статьи…" : `Готовлю ответ за ${personas.length === 3 ? "всех троих" : "всех экспертов"}…`
+  const status = voicing ? "Ответ готов, включаю голос…" : seconds < 4 ? "Ищу подходящее исследование…" : seconds < 9 ? "Читаю раздел статьи…" : `Готовлю ответ за ${personas.length === 3 ? "всех троих" : "всех экспертов"}…`
   return (
     <div className="waiting" role="status">
       <div className="waiting-row">
@@ -139,17 +141,11 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
   const speechKey = `${turn.id}:${active.id}`
   const [copied, setCopied] = useState(false)
 
-  // Первое появление — по словам; смена эксперта — мгновенная замена текста: ответ уже был готов.
+  // Первое появление — по буквам (TypedText); смена эксперта — мгновенная замена текста: ответ уже был готов.
+  // Если ответ читают вслух, текст идёт за голосом, а не по таймеру.
   const fresh = !!turn.fresh
-  const words = shown.text.split(/\s+/).length
-  const step = Math.min(14, 700 / words) * active.pace
-  useEffect(() => {
-    if (!fresh) return
-    const timer = setTimeout(() => onRevealed(turn.id), words * step + 900)
-    return () => clearTimeout(timer)
-  }, [fresh, onRevealed, step, turn.id, words])
-
-  let counter = 0
+  const spoken = useSpokenWords(speech, speechKey, fresh && speech.auto && speech.unlocked && !turn.late, () => onRevealed(turn.id))
+  const synced = fresh && spoken !== null
   const paragraphs = shown.text.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean)
   const copy = async () => {
     try {
@@ -164,25 +160,29 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
   return (
     <article className="reply">
       <header className="reply-head">
-        <Avatar persona={active} size={32} state={speech.playing === speechKey ? "speaking" : "active"} getLevel={speech.level} />
+        <Avatar
+          persona={active}
+          size={32}
+          state={speech.playing === speechKey ? "speaking" : speech.loading === speechKey ? "thinking" : "active"}
+          getLevel={speech.level}
+        />
         <span>{active.name}</span>
       </header>
 
-      <div className={fresh ? "reply-text" : "reply-text swap"} key={active.id}>
-        {paragraphs.map((block, position) => (
-          <p key={position}>
-            {fresh
-              ? block.split(/\s+/).map((word, inner) => (
-                  <span key={inner} className="word" style={{ animationDelay: `${Math.round(counter++ * step)}ms` }}>
-                    {word}{" "}
-                  </span>
-                ))
-              : block}
-          </p>
-        ))}
+      {synced && speech.loading === speechKey && (
+        <p className="note" role="status">
+          Готовлю голос…
+        </p>
+      )}
+      <div className={fresh ? "reply-text" : "reply-text swap"} key={`${active.id}-${synced ? "voice" : "text"}`}>
+        {fresh ? (
+          <TypedText text={shown.text} words={synced ? spoken : null} pace={active.pace} onDone={() => onRevealed(turn.id)} />
+        ) : (
+          paragraphs.map((block, position) => <p key={position}>{block}</p>)
+        )}
       </div>
 
-      <div className={fresh ? "reply-extras late" : "reply-extras"}>
+      <div className={fresh && !synced ? "reply-extras late" : "reply-extras"}>
         {shown.borrowed && <p className="note">У выбранного эксперта нет ответа на этот вопрос — показан ответ того, кого спрашивали.</p>}
         {shown.degraded && (
           <div className="degraded">
@@ -236,10 +236,10 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
             <button
               type="button"
               className="icon-button"
-              aria-label={speech.playing === speechKey ? "Остановить озвучивание" : "Озвучить ответ"}
-              onClick={() => void speech.toggle(speechKey, shown.text, active.id)}
+              aria-label={speech.playing === speechKey ? "Остановить" : "Послушать ответ"}
+              onClick={() => speech.toggle(speechKey, shown.text, active.id)}
             >
-              {speech.loading === speechKey ? <LoaderCircle size={18} className="spin" /> : speech.playing === speechKey ? <Square size={16} /> : <Volume2 size={18} />}
+              {speech.loading === speechKey ? <LoaderCircle size={18} className="spin" /> : speech.playing === speechKey ? <Square size={14} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
             </button>
             <button type="button" className="icon-button" aria-label={copied ? "Скопировано" : "Скопировать ответ"} onClick={() => void copy()}>
               {copied ? <Check size={18} /> : <Copy size={18} />}

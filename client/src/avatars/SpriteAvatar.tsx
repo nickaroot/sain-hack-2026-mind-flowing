@@ -96,7 +96,7 @@ function usePose(set: SpriteSet, state: AvatarState, lively: boolean, getLevel?:
   return pose
 }
 
-const layer = (set: SpriteSet, frame: number, size: number, large: boolean): CSSProperties => {
+export const layer = (set: SpriteSet, frame: number, size: number, large: boolean): CSSProperties => {
   const zoom = large ? set.zoom : set.faceZoom
   const focus = large ? set.focus : set.face
   const side = zoom * size
@@ -121,7 +121,7 @@ export function SpriteAvatar({ expertId, state, size, getLevel }: AvatarProps) {
       className="avatar-live"
       data-state={state}
       data-large={large}
-      style={{ width: size, height: size, background: set.bg, borderRadius: large ? "50%" : size * 0.32 }}
+      style={{ width: size, height: size, background: set.bg, borderRadius: "50%" }}
       aria-hidden="true"
     >
       <span className="avatar-pop" key={pose.pop}>
