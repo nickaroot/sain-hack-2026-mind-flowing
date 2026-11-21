@@ -1,4 +1,4 @@
-// Голос экспертов: озвучивание реплик, очередь фрагментов и положение речи, по которому проявляется текст.
+// Голос экспертов: озвучивание реплик, очередь фрагментов и форма рта аватара под звучащий звук.
 import { useCallback, useEffect, useRef, useState } from "react"
 import { API_URL, speak } from "./api"
 import { voiceMessage } from "./hooks"
@@ -32,7 +32,6 @@ if (import.meta.env.VITE_LOCAL_STAND === "1") {
   window.addEventListener("focus", refresh)
 }
 
-const words = (text: string) => text.split(/\s+/).filter(Boolean).length
 
 /** Делит текст на фрагменты для синтеза по границам предложений; слова не теряются и не рвутся. */
 export function splitForVoice(text: string): string[] {
@@ -88,14 +87,12 @@ async function analyse(blob: Blob): Promise<Pick<Clip, "level" | "voiced">> {
 
 type Narration = {
   key: string
-  counts: number[]
   /** Дорожки звуков по фрагментам: по ним рот аватара принимает форму произносимой буквы. */
   tracks: MouthTrack[]
   index: number
   done: boolean
   clip: Clip | null
   fake: { from: number; ms: number } | null
-  shown: number
 }
 
 export function useSpeech() {
@@ -165,18 +162,6 @@ export function useSpeech() {
    * Ждёт, пока будет готово начало озвучки, но не дольше отведённого: текст и голос должны появиться вместе.
    * Отвечает, успел ли голос. Не успел — текст показывают сразу, а голос подключится, когда будет готов.
    */
-  const ready = useCallback(
-    (text: string, expertId: string, ms: number) =>
-      Promise.race([
-        load(splitForVoice(text)[0], expertId).then(
-          () => true,
-          () => false,
-        ),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms)),
-      ]),
-    [load],
-  )
-
   const stop = useCallback(() => {
     token.current += 1
     narration.current = null
@@ -218,34 +203,13 @@ export function useSpeech() {
     return { open: shape.open * (0.55 + 0.45 * Math.min(1, loud / 0.6)), round: shape.round }
   }, [])
 
-  /** Сколько слов реплики уже произнесено. null — эту реплику сейчас не читают; Infinity — дочитали. */
-  const progress = useCallback((key: string): number | null => {
-    const current = narration.current
-    if (!current || current.key !== key) return null
-    if (current.done) return Infinity
-    if (current.index < 0) return 0
-    let before = 0
-    for (let index = 0; index < current.index; index++) before += current.counts[index]
-    const element = player.current
-    let part = 0
-    if (current.fake) part = Math.min(1, (performance.now() - current.fake.from) / current.fake.ms)
-    else if (element && current.clip?.voiced) {
-      // По звучащим участкам: в паузах и в тишине перед речью текст стоит.
-      const voiced = current.clip.voiced
-      part = voiced[Math.min(voiced.length - 1, Math.floor(element.currentTime / FRAME))] / voiced[voiced.length - 1]
-    } else if (element && element.duration > 0) part = Math.min(1, element.currentTime / element.duration)
-    // Счёт только растёт: на стыке фрагментов, пока следующий запускается, слова не пропадают.
-    current.shown = Math.max(current.shown, before + Math.ceil(Math.min(1, part) * current.counts[current.index]))
-    return current.shown
-  }, [])
-
   const narrate = useCallback(
     async (key: string, text: string, expertId: string) => {
       stop()
       const element = prepare()
       const mine = token.current
       const chunks = splitForVoice(text)
-      const current: Narration = { key, counts: chunks.map(words), tracks: chunks.map(mouthTrack), index: -1, done: false, clip: null, fake: null, shown: 0 }
+      const current: Narration = { key, tracks: chunks.map(mouthTrack), index: -1, done: false, clip: null, fake: null }
       narration.current = current
       setError(null)
       setLoading(key)
@@ -332,46 +296,7 @@ export function useSpeech() {
   )
 
   useEffect(() => stop, [stop])
-  return { loading, playing, error, auto, started, unlocked, blocked, setAuto, toggle, narrate, ready, stop, level, mouth, progress }
+  return { loading, playing, error, auto, started, unlocked, blocked, setAuto, toggle, narrate, stop, level, mouth }
 }
 
 export type Speech = ReturnType<typeof useSpeech>
-
-/**
- * Сколько слов реплики показать, если её читают вслух: текст проявляется вместе с голосом.
- * null — голос эту реплику не читает, показывать её нужно обычным способом.
- */
-export function useSpokenWords(speech: Speech, key: string, enabled: boolean, onDone?: () => void): number | null {
-  const [shown, setShown] = useState<number | null>(enabled ? 0 : null)
-  const done = useRef(onDone)
-  done.current = onDone
-  const progress = speech.progress
-  useEffect(() => {
-    if (!enabled) {
-      setShown(null)
-      return
-    }
-    setShown(0)
-    let frame = 0
-    const started = performance.now()
-    const tick = () => {
-      const spoken = progress(key)
-      const waited = performance.now() - started
-      // Голос не начался: либо его и не включали (ждём недолго), либо он готовится слишком долго.
-      if ((spoken === null && waited > 500) || (spoken === 0 && waited > 12_000)) {
-        setShown(null)
-        return
-      }
-      if (spoken === Infinity) {
-        setShown(Infinity)
-        done.current?.()
-        return
-      }
-      if (spoken !== null) setShown(spoken)
-      frame = requestAnimationFrame(tick)
-    }
-    frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [enabled, key, progress])
-  return shown
-}

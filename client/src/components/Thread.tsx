@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import { BookOpen, Check, ChevronRight, Clock, Copy, LoaderCircle, Play, RotateCw, Square, WifiOff } from "lucide-react"
 import { Avatar } from "./Avatar"
@@ -7,7 +7,6 @@ import type { Turn } from "../chat"
 import type { ApiError, Citation } from "../api"
 import type { Persona } from "../experts"
 import { useElapsed } from "../hooks"
-import { useSpokenWords } from "../speech"
 import type { Speech } from "../speech"
 import { TypedText } from "./TypedText"
 
@@ -34,7 +33,7 @@ export function Thread(props: Props) {
       {turns.map((turn, position) => (
         <section key={turn.id} className="turn" data-last={position === turns.length - 1} ref={(element) => props.registerTurn(turn.id, element)}>
           <div className="bubble">{turn.question}</div>
-          {turn.status === "pending" && <Waiting startedAt={turn.startedAt} active={active} personas={props.personas} voicing={!!turn.voicing} />}
+          {turn.status === "pending" && <Waiting startedAt={turn.startedAt} active={active} personas={props.personas} />}
           {turn.status === "error" && turn.error && <Problem turn={turn} error={turn.error} onRetry={() => props.onRetry(turn.id)} />}
           {turn.status === "done" && turn.response && <Reply {...props} turn={turn} withSwitch={turn.id === lastDone} />}
         </section>
@@ -44,10 +43,10 @@ export function Thread(props: Props) {
 }
 
 /** Ожидание: потокового ответа нет, сервер отвечает одним куском через 10–20 секунд (до 90). */
-function Waiting({ startedAt, active, personas, voicing }: { startedAt: number; active: Persona; personas: Persona[]; voicing: boolean }) {
+function Waiting({ startedAt, active, personas }: { startedAt: number; active: Persona; personas: Persona[] }) {
   const seconds = useElapsed(startedAt, true)
   // Этапы показаны по времени: порядок как на сервере (поиск → чтение → ответ), но это не его отчёт.
-  const status = voicing ? "Ответ готов, включаю голос…" : seconds < 4 ? "Ищу подходящее исследование…" : seconds < 9 ? "Читаю раздел статьи…" : `Готовлю ответ за ${personas.length === 3 ? "всех троих" : "всех экспертов"}…`
+  const status = seconds < 4 ? "Ищу подходящее исследование…" : seconds < 9 ? "Читаю раздел статьи…" : `Готовлю ответ за ${personas.length === 3 ? "всех троих" : "всех экспертов"}…`
   return (
     <div className="waiting" role="status">
       <div className="waiting-row">
@@ -141,11 +140,18 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
   const speechKey = `${turn.id}:${active.id}`
   const [copied, setCopied] = useState(false)
 
-  // Первое появление — по буквам (TypedText); смена эксперта — мгновенная замена текста: ответ уже был готов.
-  // Если ответ читают вслух, текст идёт за голосом, а не по таймеру.
+  // Первое появление — фразами (TypedText), в своём темпе: голос, если он читает ответ, текст не задерживает.
+  // Смена эксперта — мгновенная замена текста: ответ уже был готов.
   const fresh = !!turn.fresh
-  const spoken = useSpokenWords(speech, speechKey, fresh && speech.auto && speech.unlocked && !turn.late, () => onRevealed(turn.id))
-  const synced = fresh && spoken !== null
+  // Чей текст только что появился фразами: когда появление закончилось, он уже на экране и заново не проявляется.
+  // Анимация замены нужна только при смене эксперта.
+  const typed = useRef<string | null>(null)
+  if (fresh) typed.current = active.id
+  useEffect(() => {
+    if (!fresh) typed.current = null
+    // Только при смене эксперта.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active.id])
   const paragraphs = shown.text.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean)
   const copy = async () => {
     try {
@@ -170,20 +176,15 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
         <span>{active.name}</span>
       </header>
 
-      {synced && speech.loading === speechKey && (
-        <p className="note" role="status">
-          Готовлю голос…
-        </p>
-      )}
-      <div className={fresh ? "reply-text" : "reply-text swap"} key={`${active.id}-${synced ? "voice" : "text"}`}>
+      <div className={fresh || typed.current === active.id ? "reply-text" : "reply-text swap"} key={active.id}>
         {fresh ? (
-          <TypedText text={shown.text} words={synced ? spoken : null} pace={active.pace} onDone={() => onRevealed(turn.id)} />
+          <TypedText text={shown.text} pace={active.pace} onDone={() => onRevealed(turn.id)} />
         ) : (
           paragraphs.map((block, position) => <p key={position}>{block}</p>)
         )}
       </div>
 
-      <div className={fresh && !synced ? "reply-extras late" : "reply-extras"}>
+      <div className={fresh ? "reply-extras late" : "reply-extras"}>
         {shown.borrowed && <p className="note">У выбранного эксперта нет ответа на этот вопрос — показан ответ того, кого спрашивали.</p>}
         {shown.degraded && (
           <div className="degraded">

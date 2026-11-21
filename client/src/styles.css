@@ -519,12 +519,40 @@ p {
   font-size: 16px;
   line-height: 24px;
 }
-/* Текст, который проявляется по буквам (TypedText): буквы красит цикл кадров, здесь только исходное и конечное состояние. */
-.typed .ch {
+/* Текст, который появляется фразами (TypedText): фраза получает data-on и встаёт на место бледной, потом её
+   слова набирают цвет одно за другим — по тексту слева направо идёт волна. Начало не с нуля, чтобы слова
+   не выскакивали. Слово появляется с оттенком эксперта и за остаток анимации уходит в обычный цвет текста:
+   передний край волны слегка светится. Задержку каждого слова ставит TypedText.tsx, длительность там та же. */
+.typed .w {
   opacity: 0;
 }
-.typed[data-done="true"] .ch {
+.typed .ph[data-on="true"] .w {
+  animation: phrase-in 900ms linear both;
+}
+.typed[data-done="true"] .w {
   opacity: 1;
+  animation: none;
+}
+@keyframes phrase-in {
+  from {
+    opacity: 0.2;
+    color: var(--acc);
+    animation-timing-function: cubic-bezier(0.2, 0.6, 0.35, 1);
+  }
+  33% {
+    opacity: 1;
+    color: color-mix(in oklch, var(--acc) 55%, currentColor);
+    animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typed .ph[data-on="true"] .w {
+    animation: none;
+    opacity: 1;
+  }
 }
 /* Пока эксперт не заговорил, вместо реплики — приглашение нажать. */
 .quote-hint {

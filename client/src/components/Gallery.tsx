@@ -4,7 +4,6 @@ import { ChevronLeft, ChevronRight, LoaderCircle, Play, Square } from "lucide-re
 import { Avatar } from "./Avatar"
 import { SAMPLE_QUESTION, accentStyle, galleryLine } from "../experts"
 import type { Persona } from "../experts"
-import { useSpokenWords } from "../speech"
 import type { Speech } from "../speech"
 import { TypedText } from "./TypedText"
 
@@ -25,8 +24,8 @@ export function Gallery({ personas, activeId, onActivate, onAbout, speech }: Pro
 
   const voiceOn = speech.playing === key
   const voiceLoading = speech.loading === key
-  // Голос и текст реплики неразрывны: текст появляется только вместе со звуком. При открытии страницы
-  // эксперт молчит и текста нет — их включает кнопка «играть» в карточке реплики или нажатие на самого эксперта.
+  // При открытии страницы эксперт молчит и текста нет — их включает кнопка «играть» в карточке реплики или
+  // нажатие на самого эксперта. Текст появляется сразу и в своём темпе, голос его не задерживает.
   // После первого прослушивания выбранный эксперт отвечает сам: перелистывание — тоже нажатие, звук браузер уже разрешил.
   const waitingTap = speech.blocked
   const narrate = speech.narrate
@@ -36,13 +35,15 @@ export function Gallery({ personas, activeId, onActivate, onAbout, speech }: Pro
     // Только при смене эксперта: первое включение делает кнопка, а не этот эффект.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
-  const spoken = useSpokenWords(speech, key, voiceOn || voiceLoading)
   const speaking = voiceOn
   // Чьи реплики уже звучали: их текст остаётся на экране и после того, как голос замолчал.
   const [heard, setHeard] = useState<ReadonlySet<string>>(new Set())
   useEffect(() => {
-    if (voiceOn) setHeard((before) => (before.has(active.id) ? before : new Set(before).add(active.id)))
-  }, [voiceOn, active.id])
+    if (voiceOn || voiceLoading) setHeard((before) => (before.has(active.id) ? before : new Set(before).add(active.id)))
+  }, [voiceOn, voiceLoading, active.id])
+
+  // Чьи реплики уже появились целиком: при возвращении к эксперту текст стоит на месте, а не появляется заново.
+  const [shown, setShown] = useState<ReadonlySet<string>>(new Set())
 
   const go = (offset: number) => {
     const next = personas[Math.min(personas.length - 1, Math.max(0, index + offset))]
@@ -142,7 +143,7 @@ export function Gallery({ personas, activeId, onActivate, onAbout, speech }: Pro
         <p>{active.tagline}</p>
       </div>
 
-      {/* Реплика устроена как голосовое сообщение эксперта: слева кнопка «играть», справа — текст, который идёт за голосом. */}
+      {/* Реплика устроена как голосовое сообщение эксперта: слева кнопка «играть», справа — текст: он появляется сразу, голос читает его следом. */}
       <div className="quote">
         <button
           type="button"
@@ -155,14 +156,14 @@ export function Gallery({ personas, activeId, onActivate, onAbout, speech }: Pro
         </button>
         <div className="quote-body">
           <span className="quote-label">{active.sample ? `На вопрос «${SAMPLE_QUESTION}» отвечает так` : "Как думает"}</span>
-          {spoken !== null ? (
-            <div className="quote-text" aria-live="polite">
-              <TypedText text={line} words={spoken} />
-            </div>
-          ) : heard.has(active.id) ? (
+          {shown.has(active.id) ? (
             <p className="quote-text">{line}</p>
+          ) : heard.has(active.id) ? (
+            <div className="quote-text" aria-live="polite">
+              <TypedText text={line} onDone={() => setShown((before) => new Set(before).add(active.id))} />
+            </div>
           ) : (
-            <p className="quote-text quote-hint">Нажмите на кнопку или на самого эксперта — он ответит вслух, а текст появится вместе с речью.</p>
+            <p className="quote-text quote-hint">Нажмите на кнопку или на самого эксперта — он ответит вслух, а текст появится сразу.</p>
           )}
         </div>
       </div>

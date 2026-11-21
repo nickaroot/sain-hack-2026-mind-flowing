@@ -82,19 +82,11 @@ export function App() {
   const run = useCallback(async (turn: Turn, before: Turn[], expertId: string) => {
     try {
       const response = await chat(expertId, turn.question, historyFor(before, expertId))
-      // Голос включён — эксперт сразу читает ответ, а текст проявляется вместе с речью.
-      // Начало озвучки готовится, пока ещё виден индикатор ожидания: ответ не появляется немым.
+      // Текст показывается сразу и идёт в своём темпе, быстрее чтения: человек либо читает, либо слушает.
+      // Голос, если включён, начинает читать ответ, как только готов, и текст его не ждёт.
+      patch(turn.id, { status: "done", response, error: undefined, fresh: true })
       const voice = speechRef.current
-      const speaks = voice.auto && voice.unlocked
-      const text = answerOf(response, expertId).text
-      // Ждём голос недолго: синтез целого ответа у организаторов бывает медленным, а текст уже готов.
-      let late = false
-      if (speaks) {
-        patch(turn.id, { voicing: true })
-        late = !(await voice.ready(text, expertId, 8_000))
-      }
-      patch(turn.id, { status: "done", response, error: undefined, fresh: true, voicing: false, late })
-      if (speaks) void speechRef.current.narrate(`${turn.id}:${expertId}`, text, expertId)
+      if (voice.auto && voice.unlocked) void voice.narrate(`${turn.id}:${expertId}`, answerOf(response, expertId).text, expertId)
     } catch (reason) {
       patch(turn.id, { status: "error", error: reason instanceof ApiError ? reason : new ApiError("unknown", "") })
     }
@@ -135,7 +127,7 @@ export function App() {
       speech.stop()
       setActiveId(id)
       // Тот же ответ другим голосом. Без звука текст меняется сразу. Со звуком новый эксперт его произносит:
-      // текст последнего ответа появляется заново, вместе с речью, — голос и текст неразрывны.
+      // текст последнего ответа появляется заново, в своём темпе, а голос читает его следом.
       const last = [...turnsRef.current].reverse().find((turn) => turn.status === "done" && turn.response)
       if (last?.response) {
         const speaks = speech.auto && speech.unlocked && id !== activeRef.current
