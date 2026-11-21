@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app import config, hack_api, pipeline
+from app import config, hack_api, pipeline, smalltalk
 from app.cache import BoundedCache, ResponseCache
 from app.contracts import Dataset, ExpertData, Message, Utterance
 from app.retrieval import Index
@@ -282,6 +282,16 @@ async def chat(body: ChatRequest, request: Request) -> dict:
     if body.expert_id not in {e["expert_id"] for e in dataset["experts"]}:
         raise HTTPException(404, "Такого эксперта нет")
     user_id = body.user_id or _default_user(dataset) or "live-user"
+
+    # Приветствие, «что ты умеешь», «спасибо»: готовый текст без нейросети и без очереди. Раньше такая реплика
+    # получала запасной отказ, потому что в ней нечего искать по статьям. Источника у такого ответа нет.
+    greeting = smalltalk.reply(body.text, [e["expert_id"] for e in dataset["experts"]], opening=not body.history)
+    if greeting is not None:
+        return {
+            "expert_id": body.expert_id, "text": greeting[body.expert_id], "refused": False, "degraded": False,
+            "answers": {expert_id: {"text": text, "refused": False} for expert_id, text in greeting.items()},
+            "citations": [],
+        }
 
     key = hashlib.sha256(json.dumps(
         [dataset.get("meta", {}).get("dataset_id"), user_id, body.text, [t.model_dump() for t in body.history]],

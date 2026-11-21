@@ -217,7 +217,8 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
         <div className="reply-actions">
           {withSwitch && personas.length > 1 && (
             <div className="switch-block">
-              <span className="note">Источник тот же — меняется подача</span>
+              {/* У приветствия и ответа «что я умею» источника нет: сервер отвечает готовым текстом. */}
+              <span className="note">{response.citations.length ? "Источник тот же — меняется подача" : "Ответ тот же — меняется подача"}</span>
               <div className="switch" role="radiogroup" aria-label="Тот же ответ голосом другого эксперта" data-many={personas.length > 3}>
                 {personas.length <= 3 && (
                   <i

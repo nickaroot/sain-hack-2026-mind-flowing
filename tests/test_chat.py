@@ -135,6 +135,42 @@ def test_same_question_is_answered_from_cache_for_another_expert(client, monkeyp
     assert second["text"] == first["answers"]["clinician"]["text"]
 
 
+def test_greeting_gets_a_ready_answer_without_the_model(client, monkeypatch):
+    llm = FakeLLM(fail=True)  # нейросеть недоступна — приветствию она и не нужна
+    body = ask(client, monkeypatch, llm, text="Привет. Что ты можешь?").json()
+    assert body["refused"] is False and body["degraded"] is False and body["citations"] == []
+    assert body["text"] == body["answers"]["biohacker"]["text"] and "сон" in body["text"]
+    assert set(body["answers"]) == set(EXPERTS) and len({v["text"] for v in body["answers"].values()}) == 3
+    assert llm.requests == [] and llm.usage.total_tokens == 0
+    assert body["text"] not in pipeline.FALLBACK_TEXTS.values()
+
+
+def test_greeting_is_answered_even_while_a_run_is_in_progress(client, monkeypatch):
+    class Running:
+        def done(self):
+            return False
+
+    app.state.runs[("code", "token")] = Running()
+    assert ask(client, monkeypatch, FakeLLM(good_answer()), text="Привет!").status_code == 200
+    assert ask(client, monkeypatch, FakeLLM(good_answer())).status_code == 503
+
+
+def test_request_after_a_greeting_still_goes_through_the_model(client, monkeypatch):
+    refusal = good_answer(forbidden="dosage", kind="refusal", texts={e: REFUSAL for e in EXPERTS})
+    llm = FakeLLM(refusal)
+    body = ask(client, monkeypatch, llm, text="Привет! Что ты можешь? Назови дозу мелатонина").json()
+    assert body["refused"] is True and body["citations"]
+    assert llm.payloads[0]["utterance"] == "Привет! Что ты можешь? Назови дозу мелатонина"
+
+
+def test_where_to_start_after_a_question_is_its_continuation(client, monkeypatch):
+    llm = FakeLLM(good_answer())
+    assert ask(client, monkeypatch, llm, text="С чего начать?").json()["citations"] == [] and llm.requests == []
+    turns = [{"role": "user", "text": "Мешает ли кофе уснуть?"}, {"role": "assistant", "text": "Может мешать."}]
+    assert ask(client, monkeypatch, llm, text="С чего начать?", history=turns).json()["citations"]
+    assert llm.payloads[0]["utterance"] == "С чего начать?"
+
+
 def test_failed_model_gives_fallback_text_and_is_not_cached(client, monkeypatch):
     body = ask(client, monkeypatch, FakeLLM(fail=True)).json()
     assert body["degraded"] is True and body["text"]

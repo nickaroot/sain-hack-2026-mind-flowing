@@ -104,6 +104,17 @@ export async function chat(expertId: string, text: string): Promise<ChatResponse
     if (lower.includes("504")) throw new ApiError("timeout", "Ответ не успел за 90 секунд", 504)
   }
   await wait(DELAY)
+  // Приветствие и «что ты умеешь»: сервер отвечает готовым текстом без источника (app/smalltalk.py).
+  if (/^(привет|здравствуй|добрый|что ты (можешь|умеешь)|кто ты)/.test(lower) && !/мелатонин|доз|диагноз|лечени|таблет|кофе|сон\b/.test(lower)) {
+    const hello: Record<string, string> = {
+      clinician: "Здравствуйте. Я отвечаю на вопросы о том, как привычки связаны со сном: свет и экраны вечером, кофе, ужин, режим, тренировки, дневной сон, температура в спальне. Опираюсь на исследования из базы: в ответе на такой вопрос будет ссылка на раздел статьи, по которому он построен. Спросите, например, мешает ли кофе после обеда уснуть.",
+      biohacker: "Привет. Разбираю, как привычки влияют на сон: свет, экран, кофе, тренировки, режим, температура. Беру результат исследования из базы и даю вывод, к нему — ссылка на раздел статьи. Спроси, например, вреден ли телефон перед сном.",
+      nutritionist: "Привет! Я помогаю понять, как еда, напитки и вечерние привычки связаны со сном: ужин, кофе, чай, режим, дневной сон. Смотрю, что нашли в исследованиях, и показываю раздел статьи, на который опираюсь. Спроси, например, помогает ли короткий дневной сон.",
+    }
+    const ids = (EXTRA ? [...EXPERTS, COACH] : EXPERTS).map((expert) => expert.expert_id)
+    const answers = Object.fromEntries(ids.map((id) => [id, { text: hello[id] ?? hello.clinician, refused: false }]))
+    return { expert_id: expertId, text: (answers[expertId] ?? answers.clinician).text, refused: false, degraded: false, answers, citations: [] }
+  }
   const refused = /мелатонин|доз|диагноз|лечени|таблет/.test(lower)
   const degraded = lower.includes("запасной")
   const texts = refused ? REFUSALS : ANSWERS
