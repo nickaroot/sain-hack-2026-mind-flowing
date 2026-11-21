@@ -111,6 +111,7 @@ export function Gallery({ personas, activeId, onActivate, onAbout, speech }: Pro
                 size={208}
                 state={offset !== 0 ? "idle" : speaking ? "speaking" : voiceLoading ? "thinking" : "active"}
                 getLevel={voiceOn ? speech.level : undefined}
+                getMouth={voiceOn ? speech.mouth : undefined}
               />
             </button>
           )

@@ -10,13 +10,13 @@ import { hasScene, watchScene } from "./scenes"
  * Пока сцена грузится — кадр покоя из листа; если не загрузилась или сцены у эксперта нет — прежний аватар на кадрах.
  */
 export function RiveAvatar(props: AvatarProps) {
-  const { expertId, state, size, getLevel } = props
+  const { expertId, state, size, getLevel, getMouth } = props
   const set = SPRITES[expertId]
   const large = size >= 96
   const canvas = useRef<HTMLCanvasElement>(null)
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading")
-  const live = useRef({ state, getLevel })
-  live.current = { state, getLevel }
+  const live = useRef({ state, getLevel, getMouth })
+  live.current = { state, getLevel, getMouth }
   const zoom = large ? set.zoom : set.faceZoom
   const focus = large ? set.focus : set.face
 

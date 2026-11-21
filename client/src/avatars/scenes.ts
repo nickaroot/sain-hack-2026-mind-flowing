@@ -1,8 +1,11 @@
 // Rive-сцены экспертов. На каждого эксперта — одна живая сцена на всё приложение: она рисуется на свой
 // невидимый холст, а каждый аватар этого эксперта (в галерее, шапке, ответах, меню) копирует с него свой кадр —
 // по пояс или лицо. Так сцена загружается один раз, а графический контекст на странице один, сколько бы ни было аватаров.
-// Сцены собираются в rive-lab/ и управляются тремя числами: mouth, lookX, lookY (0–100).
+// Сцены собираются в rive-lab/ и управляются числами 0–100: взгляд (lookX, lookY) и рот. У сцены с ртом-объектом
+// рот — это open (0 — улыбка покоя, 25 — губы сомкнуты, 100 — широко открыт) и round (округление);
+// у прежних сцен — одно число mouth.
 import type { AvatarState } from "./index"
+import type { MouthShape } from "../visemes"
 import biohacker from "./biohacker.riv?url"
 import clinician from "./clinician.riv?url"
 import nutritionist from "./nutritionist.riv?url"
@@ -17,7 +20,7 @@ export type Viewer = {
   /** Во сколько раз кадр больше круга и какая точка кадра в его центре (доли кадра). */
   zoom: number
   focus: { x: number; y: number }
-  read: () => { state: AvatarState; getLevel?: () => number | null }
+  read: () => { state: AvatarState; getLevel?: () => number | null; getMouth?: () => MouthShape | null }
 }
 type Status = "loading" | "ready" | "failed"
 
@@ -97,10 +100,13 @@ class Scene {
       onLoadError: () => this.settle("failed"),
       onLoad: () => {
         const data = rive.viewModelInstance
-        const mouth = data?.number("mouth")
         const lookX = data?.number("lookX")
         const lookY = data?.number("lookY")
-        if (!mouth || !lookX || !lookY) return this.settle("failed")
+        // Рот с двумя осями: форма под букву. У прежних сцен — одно число, открытие по громкости.
+        const shape = { open: data?.number("open"), round: data?.number("round") }
+        const shaped = !!(shape.open && shape.round)
+        const mouth = shaped ? null : data?.number("mouth")
+        if (!lookX || !lookY || !(shaped || mouth)) return this.settle("failed")
         // Аватары показывают сцену, когда на её холсте есть кадр. Событие приходит в начале каждого прохода
         // отрисовки, так что ко второму первый кадр уже нарисован.
         let passes = 0
@@ -112,6 +118,7 @@ class Scene {
         rive.on(EventType.Advance, onPass)
 
         let open = 0
+        let round = 0
         let x = 50
         let y = 50
         let last = performance.now()
@@ -128,13 +135,29 @@ class Scene {
               top = current
             }
           }
+          const speaking = top.state === "speaking"
           let target = 0
-          if (top.state === "speaking") {
-            const heard = top.getLevel?.() ?? null
-            // Без живого звука — правдоподобный ритм слогов.
-            target = heard !== null ? openness(heard) : Math.max(0, 55 + 45 * Math.sin(now / 90) * Math.sin(now / 310))
+          let pucker = 0
+          if (speaking) {
+            const said = shaped ? (top.getMouth?.() ?? null) : null
+            if (said) {
+              // 0 — губы сомкнуты по нарисованной линии, 100 — рот открыт широко; round собирает губы к середине.
+              target = said.open
+              pucker = said.round
+            } else if (shaped) {
+              const heard = top.getLevel?.() ?? null
+              target = heard !== null ? openness(heard) : Math.max(0, 55 + 45 * Math.sin(now / 90) * Math.sin(now / 310))
+            } else {
+              const heard = top.getLevel?.() ?? null
+              // Без живого звука — правдоподобный ритм слогов.
+              target = heard !== null ? openness(heard) : Math.max(0, 55 + 45 * Math.sin(now / 90) * Math.sin(now / 310))
+            }
           }
-          open += (target - open) * (1 - Math.exp(-dt * (target > open ? 38 : 16)))
+          // Рот догоняет нужную форму быстро, но не скачком: это движение, а не смена кадров.
+          // После речи рот закрывается спокойнее, чем двигается в ней.
+          const pace = !shaped ? (target > open ? 38 : 16) : !speaking ? 12 : target > open ? 30 : 22
+          open += (target - open) * (1 - Math.exp(-dt * pace))
+          round += (pucker - round) * (1 - Math.exp(-dt * 16))
           let tx = 50
           let ty = 50
           if (top.state === "thinking") {
@@ -147,7 +170,10 @@ class Scene {
           }
           x += (tx - x) * (1 - Math.exp(-dt * 7))
           y += (ty - y) * (1 - Math.exp(-dt * 7))
-          mouth.value = open
+          if (shaped) {
+            shape.open!.value = open
+            shape.round!.value = round
+          } else mouth!.value = open
           lookX.value = x
           lookY.value = y
 

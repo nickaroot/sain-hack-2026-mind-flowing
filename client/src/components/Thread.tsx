@@ -165,6 +165,7 @@ function Reply({ turn, active, personas, withSwitch, openSource, onSwitch, onRet
           size={32}
           state={speech.playing === speechKey ? "speaking" : speech.loading === speechKey ? "thinking" : "active"}
           getLevel={speech.level}
+          getMouth={speech.mouth}
         />
         <span>{active.name}</span>
       </header>

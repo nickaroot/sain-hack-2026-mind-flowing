@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { API_URL, speak } from "./api"
 import { voiceMessage } from "./hooks"
+import { mouthTrack, shapeAt } from "./visemes"
+import type { MouthShape, MouthTrack } from "./visemes"
 
 const params = new URLSearchParams(location.search)
 /**
@@ -14,6 +16,7 @@ const SIMULATE_BLOCK = params.has("blockaudio")
 // Короткая тишина: ею по первому касанию «будится» проигрыватель, чтобы дальше он мог включаться сам.
 const SILENCE = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="
 const FRAME = 0.04 // шаг огибающей громкости, секунды
+const MOUTH_LEAD = 0.06 // на сколько рот опережает звук, секунды
 
 // Локальный стенд сам сообщает, можно ли дробить ответ: голос прода идёт одним запросом, локальные движки — по предложениям.
 let chunked = CHUNKED
@@ -83,7 +86,17 @@ async function analyse(blob: Blob): Promise<Pick<Clip, "level" | "voiced">> {
   }
 }
 
-type Narration = { key: string; counts: number[]; index: number; done: boolean; clip: Clip | null; fake: { from: number; ms: number } | null; shown: number }
+type Narration = {
+  key: string
+  counts: number[]
+  /** Дорожки звуков по фрагментам: по ним рот аватара принимает форму произносимой буквы. */
+  tracks: MouthTrack[]
+  index: number
+  done: boolean
+  clip: Clip | null
+  fake: { from: number; ms: number } | null
+  shown: number
+}
 
 export function useSpeech() {
   const [loading, setLoading] = useState<string | null>(null)
@@ -183,6 +196,28 @@ export function useSpeech() {
     return clip.level[Math.min(clip.level.length - 1, Math.floor(element.currentTime / FRAME))] ?? 0
   }, [])
 
+  /**
+   * Форма рта в эту секунду: какая буква реплики сейчас звучит и насколько громко. null — звука нет.
+   * Положение в тексте считается по звучащим участкам записи, как и у проявления слов.
+   */
+  const mouth = useCallback((): MouthShape | null => {
+    const current = narration.current
+    const element = player.current
+    if (!current || current.done || current.index < 0) return null
+    const track = current.tracks[current.index]
+    if (current.fake) return shapeAt(track, (performance.now() - current.fake.from) / current.fake.ms)
+    if (!element || element.paused) return null
+    const clip = current.clip
+    if (!clip?.voiced || !clip.level) return element.duration > 0 ? shapeAt(track, element.currentTime / element.duration) : null
+    // Рот опережает звук на пару кадров: так делают в мультипликации, иначе губы будто догоняют голос.
+    const frame = Math.min(clip.voiced.length - 1, Math.floor((element.currentTime + MOUTH_LEAD) / FRAME))
+    const loud = clip.level[frame] ?? 0
+    const shape = shapeAt(track, clip.voiced[frame] / clip.voiced[clip.voiced.length - 1])
+    // В тишине рот закрыт, какой бы ни была буква; тихий звук открывает его меньше громкого.
+    if (loud < 0.06) return { open: 0, round: shape.round * 0.4 }
+    return { open: shape.open * (0.55 + 0.45 * Math.min(1, loud / 0.6)), round: shape.round }
+  }, [])
+
   /** Сколько слов реплики уже произнесено. null — эту реплику сейчас не читают; Infinity — дочитали. */
   const progress = useCallback((key: string): number | null => {
     const current = narration.current
@@ -210,7 +245,7 @@ export function useSpeech() {
       const element = prepare()
       const mine = token.current
       const chunks = splitForVoice(text)
-      const current: Narration = { key, counts: chunks.map(words), index: -1, done: false, clip: null, fake: null, shown: 0 }
+      const current: Narration = { key, counts: chunks.map(words), tracks: chunks.map(mouthTrack), index: -1, done: false, clip: null, fake: null, shown: 0 }
       narration.current = current
       setError(null)
       setLoading(key)
@@ -297,7 +332,7 @@ export function useSpeech() {
   )
 
   useEffect(() => stop, [stop])
-  return { loading, playing, error, auto, started, unlocked, blocked, setAuto, toggle, narrate, ready, stop, level, progress }
+  return { loading, playing, error, auto, started, unlocked, blocked, setAuto, toggle, narrate, ready, stop, level, mouth, progress }
 }
 
 export type Speech = ReturnType<typeof useSpeech>

@@ -2,13 +2,14 @@ import { UserRound } from "lucide-react"
 import { customAvatars } from "../avatars"
 import type { AvatarState } from "../avatars"
 import type { Persona } from "../experts"
+import type { MouthShape } from "../visemes"
 
-type Props = { persona: Persona; state: AvatarState; size: number; getLevel?: () => number | null }
+type Props = { persona: Persona; state: AvatarState; size: number; getLevel?: () => number | null; getMouth?: () => MouthShape | null }
 
 /** Аватар эксперта: свой компонент из avatars/, а пока его нет — плейсхолдер с теми же состояниями. */
-export function Avatar({ persona, state, size, getLevel }: Props) {
+export function Avatar({ persona, state, size, getLevel, getMouth }: Props) {
   const Custom = customAvatars[persona.id]
-  if (Custom) return <Custom expertId={persona.id} name={persona.name} state={state} size={size} getLevel={getLevel} />
+  if (Custom) return <Custom expertId={persona.id} name={persona.name} state={state} size={size} getLevel={getLevel} getMouth={getMouth} />
 
   // Маленький размер — значок роли в плитке; большой — портретный круг-заготовка.
   if (size < 96) {
