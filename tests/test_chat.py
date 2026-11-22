@@ -29,6 +29,7 @@ def client(monkeypatch):
     reset()
     app.state.dataset = LIVE
     monkeypatch.setattr(config, "CHAT_FREEZE_FROM", "")  # окно перед зачётным прогоном проверяется отдельным тестом
+    monkeypatch.setattr(config, "FINAL_DAY", "")  # день финала проверяется отдельным тестом
     yield TestClient(app)
     reset()
 
@@ -350,6 +351,105 @@ def test_dev_dataset_is_loaded_when_no_run_happened(client, monkeypatch):
     monkeypatch.setattr(hack_api, "fetch_dataset", fake_fetch)
     assert len(client.get("/api/experts").json()["experts"]) == 3
     assert seen["code"] == config.DEV_DATASET_CODE
+
+
+FINAL = {**LIVE, "users": [{"user_id": "final-user"}], "experts": LIVE["experts"][:2]}
+
+
+def test_final_dataset_is_used_when_no_run_happened(client, monkeypatch):
+    # Финальный показ: стенд /run не вызывает, жюри спрашивает от имени пользователя final-набора.
+    app.state.dataset = None
+    monkeypatch.setattr(config, "FINAL_DATASET_CODE", "case4-final-x")
+    seen = []
+
+    async def fake_fetch(token, dataset_code):
+        seen.append(dataset_code)
+        return FINAL if dataset_code == "case4-final-x" else LIVE
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", fake_fetch)
+    body = client.get("/api/experts").json()
+    assert body["user_id"] == "final-user" and len(body["experts"]) == 2
+    client.get("/api/experts")
+    assert seen == ["case4-final-x"]  # получен один раз, набор разработки не нужен
+
+
+def test_final_dataset_gives_the_daily_budget_without_a_run(client, monkeypatch):
+    app.state.dataset = None
+    monkeypatch.setattr(config, "FINAL_DATASET_CODE", "case4-final-x")
+
+    async def fake_fetch(token, dataset_code):
+        return FINAL
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", fake_fetch)
+    state = chat.state_of(app)
+    state.day, state.chat_tokens = chat.moscow_day(), config.CHAT_TOKEN_BUDGET  # запас до прогона израсходован
+    assert ask(client, monkeypatch, FakeLLM(good_answer())).status_code == 200
+    monkeypatch.setattr(config, "FINAL_DATASET_CODE", "")
+    chat.state_of(app).final_dataset = None  # без final-набора тот же вопрос упёрся бы в запас до прогона
+    assert ask(client, monkeypatch, FakeLLM(good_answer()), text="А чай считается?").status_code == 429
+
+
+def test_closed_final_dataset_falls_back_to_dev_and_is_asked_again(client, monkeypatch):
+    app.state.dataset = None
+    monkeypatch.setattr(config, "FINAL_DATASET_CODE", "case4-final-x")
+    opened = {"final": False}
+    seen = []
+
+    async def fake_fetch(token, dataset_code):
+        seen.append(dataset_code)
+        if dataset_code == "case4-final-x" and not opened["final"]:
+            raise hack_api.HackApiError(403, "набор ещё закрыт")
+        return FINAL if dataset_code == "case4-final-x" else LIVE
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", fake_fetch)
+    assert client.get("/api/experts").json()["user_id"] == "u1"  # пока final закрыт — набор разработки
+    client.get("/api/experts")
+    assert seen == ["case4-final-x", config.DEV_DATASET_CODE]  # закрытый набор не спрашивается на каждый запрос
+    opened["final"] = True
+    chat.state_of(app).final_tried -= config.FINAL_RETRY_SECONDS  # прошла минута
+    assert client.get("/api/experts").json()["user_id"] == "final-user"
+    assert ask(client, monkeypatch, FakeLLM(good_answer())).status_code == 200
+
+
+def test_final_code_can_be_set_on_the_running_stand_with_the_team_token(client, monkeypatch):
+    app.state.dataset = None
+    monkeypatch.setattr(config, "HACK_TEAM_TOKEN", "team-secret")
+    seen = []
+
+    async def fake_fetch(token, dataset_code):
+        seen.append((token, dataset_code))
+        return FINAL if dataset_code == "case4-final-x" else LIVE
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", fake_fetch)
+    code = {"dataset_code": "case4-final-x"}
+    assert client.post("/api/final", json=code).status_code == 401
+    assert client.post("/api/final", json=code, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    team = {"Authorization": "Bearer team-secret"}
+    assert client.post("/api/final", json={"dataset_code": "a b"}, headers=team).status_code == 422
+    answer = client.post("/api/final", json=code, headers={"Authorization": "Bearer team-secret"})
+    assert answer.status_code == 200 and answer.json()["user_id"] == "final-user"
+    assert client.get("/api/experts").json()["user_id"] == "final-user"
+    assert seen == [("team-secret", "case4-final-x")]
+
+
+def test_closed_final_code_on_the_stand_is_a_clear_502(client, monkeypatch):
+    monkeypatch.setattr(config, "HACK_TEAM_TOKEN", "team-secret")
+
+    async def closed(token, dataset_code):
+        raise hack_api.HackApiError(403, "чужой набор")
+
+    monkeypatch.setattr(hack_api, "fetch_dataset", closed)
+    answer = client.post("/api/final", json={"dataset_code": "case4-final-x"}, headers={"Authorization": "Bearer team-secret"})
+    assert answer.status_code == 502 and "403" in answer.json()["detail"]
+
+
+def test_final_day_gives_the_daily_budget_even_without_the_final_code(client, monkeypatch):
+    monkeypatch.setattr(config, "FINAL_DAY", "2000-01-01")
+    state = chat.state_of(app)
+    state.day, state.chat_tokens = chat.moscow_day(), config.CHAT_TOKEN_BUDGET  # запас до прогона израсходован
+    assert ask(client, monkeypatch, FakeLLM(good_answer())).status_code == 200
+    monkeypatch.setattr(config, "FINAL_DAY", "2999-01-01")
+    assert ask(client, monkeypatch, FakeLLM(good_answer()), text="А чай считается?").status_code == 429
 
 
 def test_slow_dev_dataset_load_does_not_replace_the_dataset_of_a_run(client, monkeypatch):

@@ -10,6 +10,7 @@
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import time
@@ -61,6 +62,9 @@ class ChatState:
         self.responses = ResponseCache(CACHE_SIZE, 2 * 1024 * 1024)
         self.in_work: dict[str, asyncio.Task] = {}  # вопросы, которые считаются или ждут очереди
         self.dev_dataset: Dataset | None = None  # набор разработки для клиента, пока стенд не вызвал /run
+        self.final_dataset: Dataset | None = None  # final-набор финального показа: на нём /run не вызывается
+        self.final_tried = float("-inf")  # когда последний раз просили final-набор
+        self.final_code = config.FINAL_DATASET_CODE  # код final-набора: из настроек или заданный на стенде
         self._index: tuple[list, Index] | None = None  # база статей и её индекс
         self.day = ""
         self.chat_tokens = 0  # потрачено разговорами за сутки
@@ -115,12 +119,41 @@ def _frozen(app: FastAPI) -> bool:
     return datetime.fromisoformat(config.CHAT_FREEZE_FROM) <= now < datetime.fromisoformat(config.CHAT_FREEZE_UNTIL)
 
 
+async def _final(state: ChatState) -> None:
+    """Получить final-набор, если он задан и ещё не получен. Неудача не мешает: попробуем через минуту."""
+    if not state.final_code or state.final_dataset is not None:
+        return
+    if time.monotonic() - state.final_tried < config.FINAL_RETRY_SECONDS:
+        return
+    async with state.loading:
+        if state.final_dataset is not None or time.monotonic() - state.final_tried < config.FINAL_RETRY_SECONDS:
+            return
+        state.final_tried = time.monotonic()
+        try:
+            state.final_dataset = await hack_api.fetch_dataset(config.HACK_TEAM_TOKEN, state.final_code)
+            log.info("final-набор получен: %d пользователей", len(state.final_dataset.get("users") or []))
+        except Exception as error:
+            log.warning("final-набор пока не получен: %s", type(error).__name__)
+
+
+def _no_run_needed(app: FastAPI) -> bool:
+    """Можно тратить на разговоры весь дневной запас: прогон уже прошёл или идёт финальный показ без прогона."""
+    final_day = bool(config.FINAL_DAY) and moscow_day() >= config.FINAL_DAY
+    return bool(app.state.run_finished or state_of(app).final_dataset is not None or final_day)
+
+
 async def _dataset(request: Request) -> Dataset:
-    """Набор последнего /run, а пока прогона не было — набор разработки по токену команды."""
+    """Набор последнего /run; без прогона — final-набор финального показа, а пока его нет — набор разработки."""
     app = request.app
     if app.state.dataset is not None:
         return app.state.dataset
     state = state_of(app)
+    await _final(state)
+    # Пока шла загрузка, стенд мог вызвать /run: его набор главнее.
+    if app.state.dataset is not None:
+        return app.state.dataset
+    if state.final_dataset is not None:
+        return state.final_dataset
     if state.dev_dataset is None:
         async with state.loading:
             if state.dev_dataset is None:
@@ -190,7 +223,7 @@ def _admit(app: FastAPI, state: ChatState) -> None:
         raise HTTPException(503, "Перед зачётным прогоном новые вопросы не принимаются", headers={"Retry-After": "3600"})
     if len(state.in_work) >= MAX_QUESTIONS_IN_WORK:
         raise HTTPException(429, "Эксперты заняты, повторите вопрос через несколько секунд", headers={"Retry-After": "15"})
-    if not state.has_tokens_for_question(app.state.run_finished):
+    if not state.has_tokens_for_question(_no_run_needed(app)):
         raise HTTPException(429, "На сегодня запас разговоров исчерпан", headers={"Retry-After": "3600"})
     state.reserved += config.CHAT_TOKEN_ESTIMATE
 
@@ -258,6 +291,30 @@ async def _question_in_work(
         if task.cancelled():  # вопрос прерван начавшимся прогоном набора
             raise HTTPException(503, RUN_IN_PROGRESS, headers={"Retry-After": "60"}) from None
         raise
+
+
+class FinalRequest(BaseModel):
+    dataset_code: str = Field(min_length=1, max_length=MAX_ID_CHARS, pattern=r"^[A-Za-z0-9._-]+$")
+
+
+@router.post("/final")
+async def set_final(body: FinalRequest, request: Request) -> dict:
+    """Задать код final-набора на работающем стенде. Только с токеном команды: тем же, что выдан для API хакатона."""
+    given = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not config.HACK_TEAM_TOKEN or not hmac.compare_digest(given.encode(), config.HACK_TEAM_TOKEN.encode()):
+        raise HTTPException(401, "Нужен токен команды")
+    try:
+        dataset = await hack_api.fetch_dataset(config.HACK_TEAM_TOKEN, body.dataset_code)
+    except hack_api.HackApiError as error:
+        raise HTTPException(502, f"Сервис хакатона не отдал набор: {error.status_code}") from error
+    state = state_of(request.app)
+    state.final_code, state.final_dataset = body.dataset_code, dataset
+    log.info("final-набор задан на стенде: %d пользователей", len(dataset.get("users") or []))
+    users = dataset.get("users") or []
+    return {
+        "user_id": _default_user(dataset), "users": len(users),
+        "experts": len(dataset["experts"]), "articles": len(dataset["articles"]),
+    }
 
 
 @router.get("/experts")
