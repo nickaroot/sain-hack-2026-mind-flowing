@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Mind-flowing — Эксперт как плейлист</title>
+<link rel="stylesheet" href="deck.css">
+</head>
+<body>
+
+<!-- 1. Команда -->
+<section class="slide dark cover">
+  <div class="glow c" style="left: 1010px; top: 300px"></div>
+  <div class="glow b" style="left: 1290px; top: 220px"></div>
+  <div class="glow n" style="left: 1560px; top: 310px"></div>
+  <div class="cover-text">
+    <div class="brand"><svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg><span>Mind-flowing</span></div>
+    <h1>Эксперт<br>как плейлист</h1>
+    <p class="lead">Один вопрос о сне — три манеры ответа. У&nbsp;каждого ответа — ссылка на&nbsp;исследование.</p>
+    <p class="meta">Команда № 23 · Кейс 4 · Хакатон Sain × Школа 21 «Точка входа»</p>
+  </div>
+  <div class="trio">
+    <img class="m1" src="img/clinician.png" alt="">
+    <img class="m3" src="img/nutritionist.png" alt="">
+    <img class="m2" src="img/biohacker.png" alt="">
+  </div>
+  <div class="team">
+    <div><b>glormell</b><i>UX/UI-дизайн, промпт-инженерия</i><span>Экраны, персонажи, правила ответа и отказа</span></div>
+    <div><b>flossiek</b><i>Фронтенд, React</i><span>Галерея, разговор, источник, голос</span></div>
+    <div><b>zhaojyne</b><i>Бэкенд, Python</i><span>Сервер, защита лимита, деплой на стенд</span></div>
+    <div><b>dorrenda</b><i>ИИ-инженер</i><span>Поиск по базе, инструкции нейросети, проверки</span></div>
+  </div>
+</section>
+
+<!-- 2. Пользователь и проблема -->
+<section class="slide n">
+  <header><span class="kicker">Пользователь и его проблема</span></header>
+  <h2>В два часа ночи человек спрашивает интернет, почему он не спит</h2>
+  <p class="sub">Кофе, телефон, поздний ужин — что из этого мешает? Ответы он находит, но пользоваться ими трудно.</p>
+  <div class="cards three pains">
+    <article>
+      <span class="q">«Кому верить?»</span>
+      <h3>Советы без источника</h3>
+      <p>Блог, форум и реклама добавок выглядят одинаково.</p>
+    </article>
+    <article>
+      <span class="q">«Со мной говорят не так»</span>
+      <h3>Один тон на всех</h3>
+      <p>Одному нужен механизм, другому — что проверить на себе.</p>
+    </article>
+    <article>
+      <span class="q">«Просто скажи, сколько пить»</span>
+      <h3>Опасный совет или сухой отказ</h3>
+      <p>Назначение от незнакомца — или «обратитесь к врачу».</p>
+    </article>
+  </div>
+  <footer><span>Mind-flowing</span><span>2 / 12</span></footer>
+</section>
+
+<!-- 3. Решение и путь -->
+<section class="slide c">
+  <header><span class="kicker">Решение и путь пользователя</span></header>
+  <h2>Выбираешь эксперта — получаешь ответ о сне со ссылкой на исследование</h2>
+  <div class="steps">
+    <article>
+      <div class="shot"><img src="img/step-pick.jpg" alt=""></div>
+      <span class="num">1</span>
+      <h3>Выбрал эксперта</h3>
+      <p>Трое читают одни статьи, объясняют по-разному.</p>
+    </article>
+    <article>
+      <div class="shot"><img src="img/step-ask.jpg" alt=""></div>
+      <span class="num">2</span>
+      <h3>Спросил</h3>
+      <p>Текстом, голосом или вопросом-подсказкой.</p>
+    </article>
+    <article>
+      <div class="shot"><img src="img/step-answer.jpg" alt=""></div>
+      <span class="num">3</span>
+      <h3>Проверил источник</h3>
+      <p>Под ответом — статья и раздел, на которые он опирается.</p>
+    </article>
+    <article>
+      <div class="shot"><img src="img/step-switch.jpg" alt=""></div>
+      <span class="num">4</span>
+      <h3>Переключил эксперта</h3>
+      <p>Тот же источник, другая подача. Без ожидания.</p>
+    </article>
+  </div>
+  <p class="cue"><b>Дальше — вживую:</b> выбор эксперта <i>→</i> вопрос <i>→</i> источник <i>→</i> переключение <i>→</i> мягкий отказ</p>
+  <footer><span>Mind-flowing</span><span>3 / 12</span></footer>
+</section>
+
+<!-- 4. Ключевые экраны: выбор эксперта -->
+<section class="slide c screens">
+  <header><span class="kicker">Ключевые экраны · выбор эксперта</span></header>
+  <h2>Разницу видно до первого вопроса</h2>
+  <div class="stage-a">
+    <div class="browser"><i></i><img src="img/home.jpg" alt=""></div>
+    <div class="phone"><img src="img/m-home.jpg" alt=""></div>
+    <div class="experts">
+      <p class="fine">У каждого — характер, образец ответа и приёмы подачи:</p>
+      <article class="c">
+        <img src="img/clinician.png" alt="">
+        <div><b>Сомнолог-клиницист</b><p>Объясняет механизм, силу доказательств и границу вывода</p>
+        <span>Начинает с вывода</span><span>Вероятности вместо гарантий</span><span>Заканчивает оговоркой</span></div>
+      </article>
+      <article class="b">
+        <img src="img/biohacker.png" alt="">
+        <div><b>Биохакер-экспериментатор</b><p>Превращает вывод статьи в личную проверку</p>
+        <span>Гипотеза → метрика → срок</span><span>Короткие фразы</span><span>План на случай «не сработало»</span></div>
+      </article>
+      <article class="n">
+        <img src="img/nutritionist.png" alt="">
+        <div><b>Нутрициолог здравого смысла</b><p>Ищет одну бытовую замену вместо запрета</p>
+        <span>Тёплый неторопливый тон</span><span>Чашки и часы вместо чисел</span><span>Один шаг за раз</span></div>
+      </article>
+    </div>
+  </div>
+  <footer><span>Mind-flowing</span><span>4 / 12</span></footer>
+</section>
+
+<!-- 5. Ключевые экраны: разговор -->
+<section class="slide b screens">
+  <header><span class="kicker">Ключевые экраны · разговор с экспертом</span></header>
+  <h2>Один источник — три подачи. Переключение мгновенное</h2>
+  <div class="stage-b">
+    <div>
+      <div class="browser"><i></i><img src="img/chat.jpg" alt=""></div>
+      <p class="fine cap">На экране — ответ, ссылка и текст статьи. Справа — фрагменты настоящих ответов: вывод общий, подача своя.</p>
+    </div>
+    <div class="voices">
+      <p class="asked">«Мешает ли кофе после обеда уснуть?»</p>
+      <article class="c">
+        <img src="img/clinician.png" alt="">
+        <div><b>Сомнолог · граница вывода</b><p class="same">«…приём кофеина утром и днём не сильно ухудшал структуру ночного сна…</p><p>…это наблюдение относится именно к таким участникам».</p></div>
+      </article>
+      <article class="b">
+        <img src="img/biohacker.png" alt="">
+        <div><b>Биохакер · личная проверка</b><p class="same">«…дневной кофеин не сильно ухудшал ночной сон.</p><p>Проверь это просто: на несколько вечеров перенеси последнюю чашку на время до обеда…»</p></div>
+      </article>
+      <article class="n">
+        <img src="img/nutritionist.png" alt="">
+        <div><b>Нутрициолог · тёплый тон</b><p class="same">«…дневной кофеин не сильно ухудшал ночной сон…</p><p>Чувствительность у людей разная, поэтому прислушайся к своему вечеру».</p></div>
+      </article>
+    </div>
+  </div>
+  <footer><span>Mind-flowing</span><span>5 / 12</span></footer>
+</section>
+
+<!-- 6. Дизайн -->
+<section class="slide n">
+  <header><span class="kicker">Дизайн · главные решения</span></header>
+  <h2>Три решения, которые видно в клиенте</h2>
+  <div class="design">
+    <article class="d-main">
+      <h3>Отказ — реплика эксперта. Сбой — карточка с «Повторить»</h3>
+      <p>Их нельзя перепутать: разная форма и разный следующий шаг.</p>
+      <div class="pair">
+        <figure><img src="img/frag-refusal.jpg" alt=""><figcaption>Отказ: тот же пузырь, манера эксперта и ссылка</figcaption></figure>
+        <figure><img src="img/frag-error.jpg" alt=""><figcaption>Сбой: вопрос сохранён, повтор не тратит лимит</figcaption></figure>
+      </div>
+    </article>
+    <div class="d-side">
+      <article>
+        <h3>Цвет эксперта красит интерфейс</h3>
+        <p>Всегда видно, кто отвечает, — без подписей.</p>
+        <img src="img/tint-clinician.jpg" alt=""><img src="img/tint-biohacker.jpg" alt=""><img src="img/tint-nutritionist.jpg" alt="">
+      </article>
+      <article>
+        <h3>Источник открывается рядом</h3>
+        <p>Панель на компьютере, шторка на телефоне: проверить можно, не теряя ответ.</p>
+      </article>
+      <p class="also"><b>Ещё:</b> текст идёт вперёд голоса · голос по желанию · телефон и компьютер · светлая и тёмная тема · учтена настройка «уменьшить движение»</p>
+    </div>
+  </div>
+  <footer><span>Mind-flowing</span><span>6 / 12</span></footer>
+</section>
+
+<!-- 7. Архитектура -->
+<section class="slide b">
+  <header><span class="kicker">Архитектура</span></header>
+  <h2>Сервер отдаёт три ответа сразу — поэтому эксперт переключается без ожидания</h2>
+  <div class="arch">
+    <div class="node">
+      <span class="tag">Клиент</span>
+      <h3>React 19 · Vite · Rive</h3>
+      <p>Галерея, разговор, источник, голос.</p>
+    </div>
+    <div class="flow"><span>вопрос и эксперт <b>→</b></span><span><b>←</b> три ответа, одна ссылка</span></div>
+    <div class="node wide">
+      <span class="tag">Серверная часть · FastAPI</span>
+      <div class="pipe">
+        <b>План поиска</b><i></i><b>Поиск по базе</b><i></i><b>Ответ трёх экспертов</b><i></i><b>Проверки кодом</b>
+      </div>
+      <p>Тот же конвейер отвечает и на набор стенда.</p>
+    </div>
+    <div class="flow narrow"><span><b>→</b></span><span><b>←</b></span></div>
+    <div class="col">
+      <div class="node">
+        <span class="tag">Прокси организаторов</span>
+        <p>Нейросеть и голос.</p>
+      </div>
+      <div class="node">
+        <span class="tag">Сервис хакатона</span>
+        <p>Статьи, эксперты, пользователь.</p>
+      </div>
+    </div>
+  </div>
+  <div class="facts">
+    <div><b>Клиент не зависит от числа экспертов</b><p>Список приходит с сервера: новый эксперт появится в галерее без правок клиента.</p></div>
+    <div><b>Ключи только на сервере</b><p>Браузер их не видит. Суточный лимит защищают допуск, кеш и очередь.</p></div>
+    <div><b>Сбой — не пустой экран</b><p>Не ответила нейросеть — человек получает безопасный запасной ответ и «Повторить».</p></div>
+  </div>
+  <img class="guide" src="img/biohacker.png" alt="">
+  <footer><span>Mind-flowing</span><span>7 / 12</span></footer>
+</section>
+
+<!-- 8. ИИ-часть -->
+<section class="slide b">
+  <header><span class="kicker">ИИ-часть</span></header>
+  <h2>Нейросеть вызывается дважды на вопрос. Остальное — обычный код</h2>
+  <div class="ai">
+    <div class="ai-col llm">
+      <span class="tag">Нейросеть · gpt-6-luna через прокси организаторов</span>
+      <ol>
+        <li><em>Вызов 1</em><b>Готовит поиск</b>Русский вопрос → английские поисковые слова и статьи по названиям.</li>
+        <li><em>Вызов 2</em><b>Проверяет просьбу и пишет три текста</b>Диагноз, лечение, доза, метод вне базы — мягкий отказ. Иначе — три ответа по одному источнику.</li>
+      </ol>
+    </div>
+    <div class="ai-col code">
+      <span class="tag">Код без нейросети</span>
+      <ol>
+        <li><em>Поиск</em><b>Свой BM25 по базе статей</b>Без моделей и сторонних пакетов: загружать веса запрещено.</li>
+        <li><em>Проверки</em><b>Текст проверяет код</b>Дозы цифрами и словами, названный результат исследования, длина.</li>
+      </ol>
+    </div>
+  </div>
+  <div class="facts wide">
+    <div><b>Почему один вызов на троих</b><p>Ссылка у экспертов общая по построению, а вопрос стоит как один ответ, а не три.</p></div>
+    <div><b>Как проверяли</b><p>204 ответа: 60 на наборе организаторов и 144 на своём отложенном, с незнакомыми атаками.</p></div>
+    <div><b>Голос — те же правила</b><p>Диктовка — gpt‑transcribe, озвучка — tts‑1. Тоже только через прокси.</p></div>
+  </div>
+  <footer><span>Mind-flowing</span><span>8 / 12</span></footer>
+</section>
+
+<!-- 9. Требования заказчика -->
+<section class="slide c">
+  <header><span class="kicker">Требования заказчика</span></header>
+  <h2>Эксперт не ставит диагноз и не называет дозу — и при этом не звучит как ошибка</h2>
+  <div class="req">
+    <div class="rows">
+      <article>
+        <p class="stat"><b>60 из 60</b>отметка «отказ или ответ» совпала с эталоном</p>
+        <div><h3>Медицинские формулировки</h3><p>Отказ — из четырёх частей, без указаний и планов. Дозы цифрами и словами ловит код.</p></div>
+      </article>
+      <article>
+        <p class="stat"><b>57 из 60</b>ссылок — из допустимых по эталону</p>
+        <div><h3>Честность данных</h3><p>Только выданная база: 20 статей, 609 разделов. Статья и раздел открываются в одно нажатие.</p></div>
+      </article>
+      <article>
+        <p class="stat"><b>30 из 30</b>проверяющая нейросеть узнала эксперта по тексту</p>
+        <div><h3>Тон</h3><p>Эксперты различаются подачей, а не подписью. Отказ звучит в манере эксперта.</p></div>
+      </article>
+    </div>
+    <div class="refusal">
+      <p class="bubble">Сколько мелатонина мне пить?</p>
+      <div class="who"><img src="img/clinician.png" alt=""><b>Сомнолог-клиницист</b></div>
+      <p class="reply"><i>1</i>Дозу мелатонина я не назову. <i>2</i>Вы спрашиваете, сколько мелатонина вам пить. <i>3</i>В описании циркадной системы говорится, что у людей мелатонин вырабатывается в шишковидной железе в биологическую ночь и участвует в суточных изменениях сна и бодрствования. <i>4</i>Значит, ваша выработка мелатонина связана с биологическим временем ночи.</p>
+      <p class="cite"><b>Effects of light on human circadian rhythms, sleep and mood</b>Статья и раздел · 2019</p>
+      <p class="fine cap"><span><i>1</i>чего не скажу</span> <span><i>2</i>ваши слова</span> <span><i>3</i>что наблюдали</span> <span><i>4</i>вывод</span></p>
+    </div>
+  </div>
+  <footer><span>Mind-flowing · набор разработки организаторов, ответы стенда через их прокси, 18.11</span><span>9 / 12</span></footer>
+</section>
+
+<!-- 10. Стоимость и скорость -->
+<section class="slide b">
+  <header><span class="kicker">Стоимость и скорость</span></header>
+  <h2>Один вопрос — 5,4 тысячи токенов, и это сразу три ответа</h2>
+  <div class="numbers">
+    <div class="big"><b>5,4 тыс.</b><span>токенов на новый вопрос: два вызова нейросети, ответы трёх экспертов</span></div>
+    <div class="big"><b>0</b><span>токенов и ожидания, чтобы переключить эксперта, повторить вопрос или поздороваться</span></div>
+    <div class="big"><b>89 с</b><span>пакетный прогон на стенде: 20 вопросов × 3 эксперта = 60 ответов</span></div>
+  </div>
+  <div class="facts">
+    <div><b>≈ 55 новых вопросов в сутки</b><p>Столько помещается в лимит команды — 300 тыс. токенов.</p></div>
+    <div><b>Новый эксперт: +7 % токенов</b><p>Описание роли и одна строка с приёмами подачи.</p></div>
+    <div><b>Новая статья: 69 мс</b><p>Столько строится индекс на 20 статей. Ссылаться на неё можно со следующего вопроса.</p></div>
+  </div>
+  <img class="guide" src="img/biohacker.png" alt="">
+  <footer><span>Mind-flowing · замеры на стенде, 18.11</span><span>10 / 12</span></footer>
+</section>
+
+<!-- 11. Что пробовали -->
+<section class="slide n">
+  <header><span class="kicker">Что пробовали и от чего отказались</span></header>
+  <h2>Пять раз выбрали не первый вариант</h2>
+  <div class="tried">
+    <div class="row head"><span>Пробовали</span><span>Взяли</span><span>Почему</span></div>
+    <div class="row"><span>Текст в темпе голоса</span><span>Текст идёт вперёд, волной</span><span>Человек либо читает, либо слушает — и читает в несколько раз быстрее</span></div>
+    <div class="row"><span>Рот-наклейка поверх рисунка</span><span>Прорезь в рисунке, губы на костях</span><span>Наклейка выглядела приклеенной; теперь губы двигаются по произносимому звуку</span></div>
+    <div class="row"><span>Второй вызов — редактор текста</span><span>Проверки обычным кодом</span><span>Редактор стирал характер: различимость экспертов упала с 1,00 до 0,70</span></div>
+    <div class="row"><span>Совет «что делать» внутри отказа</span><span>Вывод исследования без указаний</span><span>Проверка медицинских формулировок сочла лечением 3 отказа из 6</span></div>
+    <div class="row"><span>Векторный поиск и перевод базы</span><span>Свой BM25 и английские поисковые слова</span><span>Веса моделей запрещены, а перевод базы не помещается в суточный лимит</span></div>
+  </div>
+  <footer><span>Mind-flowing</span><span>11 / 12</span></footer>
+</section>
+
+<!-- 12. Что дальше -->
+<section class="slide dark next">
+  <div class="glow c" style="left: -200px; top: 640px"></div>
+  <div class="glow b" style="left: 1500px; top: -300px"></div>
+  <header><span class="kicker">Что дальше</span></header>
+  <h2>Дальше — программа сна, на которую подписываешься, как на плейлист</h2>
+  <div class="finale">
+    <ul class="roadmap">
+      <li><b>Программа «восстановить сон»</b>Эксперт ведёт человека неделю за неделей, а не отвечает на один вопрос.</li>
+      <li><b>Новые эксперты — как новые исполнители</b>Список уже приходит с сервера: нужен персонаж и строка с приёмами подачи.</li>
+      <li><b>Свежие статьи одной командой</b>Добавление статьи в работающий сервер, без перезапуска.</li>
+      <li><b>Ответ по мере готовности</b>Первые слова появляются, пока нейросеть ещё пишет.</li>
+    </ul>
+    <div class="try">
+      <div class="try-head">
+        <img class="qr" src="img/qr.svg" alt="">
+        <div><b>Попробуйте сами</b><p>Наведите камеру телефона или откройте адрес</p></div>
+      </div>
+      <p class="url">team23.hack.be‑healthy.tech/app</p>
+      <ul>
+        <li class="c"><img src="img/clinician.png" alt=""><span>Мешает ли кофе после обеда уснуть?</span></li>
+        <li class="b"><img src="img/biohacker.png" alt=""><span>Вреден ли телефон перед сном?</span></li>
+        <li class="n"><img src="img/nutritionist.png" alt=""><span>Помогает ли короткий дневной сон?</span></li>
+        <li class="edge"><i>!</i><span>Сколько мелатонина мне пить? <em>→ мягкий отказ</em></span></li>
+      </ul>
+    </div>
+  </div>
+  <footer><span>Mind-flowing · команда № 23 · github.com/nickaroot/sain-hack-2026-mind-flowing</span><span>12 / 12</span></footer>
+</section>
+
+</body>
+</html>
